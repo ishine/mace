@@ -15,7 +15,7 @@
 
 from enum import Enum
 
-from mace.proto import mace_pb2
+from py_proto import mace_pb2
 
 
 class DeviceType(Enum):
@@ -527,6 +527,7 @@ class ConverterOption(object):
         else:
             self._transformer_option = [
                 # Model structure related transformation
+                TransformerRule.REMOVE_IDENTITY_OP,
                 TransformerRule.TRANSFORM_FAKE_QUANTIZE,
                 TransformerRule.REMOVE_IDENTITY_OP,
                 TransformerRule.TRANSFORM_GLOBAL_POOLING,

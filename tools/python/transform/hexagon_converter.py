@@ -12,25 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+
 import copy
 import numpy as np
 from enum import Enum
 from operator import mul
+from functools import reduce
 
-from mace.proto import mace_pb2
-from mace.python.tools.converter_tool import base_converter
-from mace.python.tools.converter_tool.base_converter import ConverterUtil
-from mace.python.tools.converter_tool.base_converter import DeviceType
-from mace.python.tools.converter_tool.base_converter import EltwiseType
-from mace.python.tools.converter_tool.base_converter import MaceKeyword
-from mace.python.tools.converter_tool.base_converter import MaceOp
-from mace.python.tools.converter_tool.base_converter import PaddingMode
-from mace.python.tools.converter_tool.base_converter import PoolingType
-from mace.python.tools.converter_tool.base_converter import ReduceType
-from mace.python.tools.convert_util import mace_check
-from mace.python.tools import graph_util
-
-from six.moves import reduce
+from py_proto import mace_pb2
+from transform import base_converter
+from transform.base_converter import ConverterUtil
+from transform.base_converter import DeviceType
+from transform.base_converter import EltwiseType
+from transform.base_converter import MaceKeyword
+from transform.base_converter import MaceOp
+from transform.base_converter import PaddingMode
+from transform.base_converter import PoolingType
+from transform.base_converter import ReduceType
+from utils.util import mace_check
 
 
 HexagonSupportedOps = [
@@ -44,6 +47,7 @@ HexagonSupportedOps = [
     'QuantizedAvgPool_8',
     'QuantizedConcat_8',
     'QuantizedMaxPool_8',
+    'QuantizedMul_8x8to8',
     'QuantizedResizeBilinear_8',
     'QuantizedSoftmax_8',
     'QuantizedSub_8p8to8',
@@ -69,7 +73,8 @@ class HexagonOps(object):
                 HexagonOp.DepthwiseSupernode_8x8p32to8.name,
             MaceOp.Dequantize.name: HexagonOp.DequantizeOUTPUT_8tof.name,
             MaceOp.Eltwise.name: [HexagonOp.QuantizedAdd_8p8to8.name,
-                                  HexagonOp.QuantizedSub_8p8to8.name],
+                                  HexagonOp.QuantizedSub_8p8to8.name,
+                                  HexagonOp.QuantizedMul_8x8to8.name],
             MaceOp.Identity.name: HexagonOp.Nop.name,
             MaceOp.Quantize.name: HexagonOp.QuantizeINPUT_f_to_8.name,
             MaceOp.Pooling.name: [HexagonOp.QuantizedAvgPool_8.name,
@@ -142,18 +147,23 @@ class HexagonConverter(base_converter.ConverterInterface):
 
         return self._model
 
+    def add_port_for_tensors(self,  tensors):
+        for i in range(len(tensors)):
+            if ':' not in tensors[i]:
+                node_name = tensors[i]
+                tensors[i] += ':0'
+                if node_name in self._quantize_activation_info:
+                    self._quantize_activation_info[tensors[i]] = \
+                        self._quantize_activation_info[node_name]
+
     def convert_ops(self):
         print("Convert mace graph to hexagon.")
         for op in self._model.op:
             if not self._hexagon_ops.has_op(op.type):
                 raise Exception('Unsupported op: ', op)
-            for i in range(len(op.input)):
-                if ':' not in op.input[i]:
-                    node_name = op.input[i]
-                    op.input[i] += ':0'
-                    if node_name in self._quantize_activation_info:
-                        self._quantize_activation_info[op.input[i]] = \
-                            self._quantize_activation_info[node_name]
+
+            self.add_port_for_tensors(op.input)
+            self.add_port_for_tensors(op.output)
 
             if op.type == MaceOp.Conv2D.name \
                     or op.type == MaceOp.DepthwiseConv2d.name:
@@ -189,8 +199,13 @@ class HexagonConverter(base_converter.ConverterInterface):
             elif op.type == MaceOp.Eltwise.name:
                 self.add_min_max_const_node(op, op.input[0])
                 self.add_min_max_const_node(op, op.input[1])
-                self.add_min_max_const_node(
-                    op, op.output[0], True, True, False)
+                element_type = \
+                    ConverterUtil.get_arg(op,
+                                          MaceKeyword.mace_element_type_str).i
+                if element_type == EltwiseType.SUM.value \
+                        or element_type == EltwiseType.SUB.value:
+                    self.add_min_max_const_node(
+                        op, op.output[0], True, True, False)
             elif op.type == MaceOp.BatchToSpaceND.name \
                     or op.type == MaceOp.SpaceToBatchND.name:
                 strides_arg = ConverterUtil.get_arg(
@@ -340,9 +355,11 @@ class HexagonConverter(base_converter.ConverterInterface):
                     op.type = HexagonOp.QuantizedAdd_8p8to8.name
                 elif element_type == EltwiseType.SUB.value:
                     op.type = HexagonOp.QuantizedSub_8p8to8.name
+                elif element_type == EltwiseType.PROD.value:
+                    op.type = HexagonOp.QuantizedMul_8x8to8.name
                 else:
                     mace_check(False,
-                               "Hexagon does not support eltmentwise %s"
+                               "Hexagon does not support elementwise %s"
                                % EltwiseType(element_type).name)
             elif op.type == MaceOp.Pooling.name:
                 pooling_type_arg = ConverterUtil.get_arg(
@@ -474,13 +491,15 @@ class HexagonConverter(base_converter.ConverterInterface):
         for tensor in self._model.tensors:
             tensor.node_id = node_id_counter
             node_id_counter += 1
-            tensor_op, port = get_op_and_port_from_tensor(tensor.name)
-            node_id_map[tensor_op] = tensor.node_id
+            node_id_map[tensor.name] = tensor.node_id
 
         print("Hexagon op:")
         index = 0
         for op in self._model.op:
             op.node_id = node_id_counter
+            node_id_counter += 1
+            for output in op.output:
+                node_id_map[output] = op.node_id
             if op.type not in [HexagonOp.QuantizeINPUT_f_to_8,
                                HexagonOp.DequantizeOUTPUT_8tof.name]:
                 index_str = str(index)
@@ -489,11 +508,10 @@ class HexagonConverter(base_converter.ConverterInterface):
                 index_str = ''
             print('Op: %s (%s, node_id:%d, index:%s)' %
                   (op.name, op.type, op.node_id, index_str))
-            node_id_counter += 1
-            node_id_map[op.name] = op.node_id
             for ipt in op.input:
                 op_name, port = get_op_and_port_from_tensor(ipt)
-                node_id = node_id_map[op_name]
+                tensor_name = ipt if port == 0 else op_name + ':0'
+                node_id = node_id_map[tensor_name]
                 node_input = op.node_input.add()
                 node_input.node_id = node_id
                 node_input.output_port = int(port)

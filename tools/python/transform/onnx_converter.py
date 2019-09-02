@@ -17,20 +17,20 @@ import sys
 from enum import Enum
 import six
 
-from mace.proto import mace_pb2
-from mace.python.tools.converter_tool import base_converter
-from mace.python.tools.converter_tool.base_converter import PoolingType
-from mace.python.tools.converter_tool.base_converter import PaddingMode
-from mace.python.tools.converter_tool.base_converter import ActivationType
-from mace.python.tools.converter_tool.base_converter import EltwiseType
-from mace.python.tools.converter_tool.base_converter import ReduceType
-from mace.python.tools.converter_tool.base_converter import FrameworkType
-from mace.python.tools.converter_tool.base_converter import RoundMode
-from mace.python.tools.converter_tool.base_converter import DataFormat
-from mace.python.tools.converter_tool.base_converter import MaceOp
-from mace.python.tools.converter_tool.base_converter import MaceKeyword
-from mace.python.tools.converter_tool.base_converter import ConverterUtil
-from mace.python.tools.convert_util import mace_check
+from py_proto import mace_pb2
+from transform import base_converter
+from transform.base_converter import PoolingType
+from transform.base_converter import PaddingMode
+from transform.base_converter import ActivationType
+from transform.base_converter import EltwiseType
+from transform.base_converter import ReduceType
+from transform.base_converter import FrameworkType
+from transform.base_converter import RoundMode
+from transform.base_converter import DataFormat
+from transform.base_converter import MaceOp
+from transform.base_converter import MaceKeyword
+from transform.base_converter import ConverterUtil
+from utils.util import mace_check
 
 import numpy as np
 
@@ -83,7 +83,7 @@ OnnxSupportedOps = [
     'Div',
     'Dropout',
     'DynamicLSTM',
-    'Elu',
+    # 'Elu',
     'Equal',
     # 'Exp',
     # 'Expand',
@@ -120,7 +120,7 @@ OnnxSupportedOps = [
     'MaxPool',
     # 'MaxRoiPool',
     # 'MaxUnpool',
-    'Mean',
+    # 'Mean',
     'Min',
     'Mul',
     # 'Multinomial',
@@ -371,7 +371,10 @@ class OnnxConverter(base_converter.ConverterInterface):
             OnnxOpType.Relu.name: self.convert_activation,
             OnnxOpType.Reshape.name: self.convert_reshape,
             OnnxOpType.Reciprocal.name: self.convert_eltwise,
+            OnnxOpType.ReduceMax.name: self.convert_reduce,
             OnnxOpType.ReduceMean.name: self.convert_reduce,
+            OnnxOpType.ReduceMin.name: self.convert_reduce,
+            OnnxOpType.ReduceProd.name: self.convert_reduce,
             OnnxOpType.Scale.name: self.convert_eltwise,
             OnnxOpType.Shape.name: self.convert_shape,
             OnnxOpType.Sigmoid.name: self.convert_activation,
