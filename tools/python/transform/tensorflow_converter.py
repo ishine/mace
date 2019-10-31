@@ -99,6 +99,7 @@ TFSupportedOps = [
     'DepthToSpace',
     'SpaceToDepth',
     'Pad',
+    'PadV2',
     'ConcatV2',
     'Mean',
     'Prod',
@@ -122,6 +123,7 @@ TFSupportedOps = [
     'MirrorPad',
     'Cumsum',
     'OneHot',
+    'Tile',
 ]
 
 TFOpType = Enum('TFOpType', [(op, op) for op in TFSupportedOps], type=str)
@@ -249,6 +251,7 @@ class TensorflowConverter(base_converter.ConverterInterface):
             TFOpType.DepthToSpace.name: self.convert_space_depth,
             TFOpType.SpaceToDepth.name: self.convert_space_depth,
             TFOpType.Pad.name: self.convert_pad,
+            TFOpType.PadV2.name: self.convert_pad,
             TFOpType.ConcatV2.name: self.convert_concat,
             TFOpType.Const.name: self.convert_nop,
             TFOpType.Gather.name: self.convert_gather,
@@ -271,6 +274,7 @@ class TensorflowConverter(base_converter.ConverterInterface):
             TFOpType.Cumsum.name: self.convert_cumsum,
             TFOpType.OneHot.name: self.convert_one_hot,
             TFOpType.Sum.name: self.convert_reduce,
+            TFOpType.Tile.name: self.convert_tile,
         }
         self._option = option
         self._mace_net_def = mace_pb2.NetDef()
@@ -307,6 +311,8 @@ class TensorflowConverter(base_converter.ConverterInterface):
 
         self.add_shape_info(transformed_graph_def)
 
+        # reset default graph to clear earlier import
+        tf.reset_default_graph()
         with tf.Session() as session:
             with session.graph.as_default() as graph:
                 tf.import_graph_def(transformed_graph_def, name='')
@@ -316,7 +322,6 @@ class TensorflowConverter(base_converter.ConverterInterface):
         # we have polluted graph with 'shape' ops, so reset it and reload it
         # again
         tf.reset_default_graph()
-
         with tf.Session() as session:
             with session.graph.as_default() as graph:
                 tf.import_graph_def(transformed_graph_def, name='')
@@ -781,13 +786,19 @@ class TensorflowConverter(base_converter.ConverterInterface):
         pad_type_arg = op.arg.add()
         pad_type_arg.name = MaceKeyword.mace_pad_type_str
 
-        if tf_op.type == TFOpType.Pad:
+        if tf_op.type == TFOpType.Pad or tf_op.type == TFOpType.PadV2:
             if len(tf_op.inputs) == 3:
                 constant_value_arg = op.arg.add()
                 constant_value_arg.name = MaceKeyword.mace_constant_value_str
-                constant_value = tf_op.inputs[2].eval().astype(np.int32) \
-                    .flat[0]
-                constant_value_arg.i = constant_value
+                constant_value = tf_op.inputs[2].eval().flat[0]
+                tf_dt = tf_op.inputs[2].dtype
+                if tf_dt == tf.float32:
+                    constant_value_arg.f = constant_value
+                elif tf_dt == tf.int32:
+                    constant_value_arg.i = constant_value
+                else:
+                    mace_check(False,
+                               "Unsupported data type: %s" % tf_dt.name)
                 self._skip_tensor.add(tf_op.inputs[2].name)
 
             pad_type_arg.i = PadType.CONSTANT.value
@@ -1038,6 +1049,10 @@ class TensorflowConverter(base_converter.ConverterInterface):
         del op.input[0]
         self._skip_tensor.add(tf_op.inputs[0].name)
 
+    def convert_tile(self, tf_op):
+        op = self.convert_general_op(tf_op)
+        op.type = MaceOp.Tile.name
+
     def convert_fake_quantize(self, tf_op):
         op = self.convert_general_op(tf_op)
         min_arg = op.arg.add()
@@ -1060,6 +1075,7 @@ class TensorflowConverter(base_converter.ConverterInterface):
         if tf_op.type == TFOpType.FakeQuantWithMinMaxVars.name:
             self._skip_tensor.add(tf_op.inputs[1].name)
             self._skip_tensor.add(tf_op.inputs[2].name)
+        del op.input[1:]
 
     def convert_cumsum(self, tf_op):
         op = self.convert_general_op(tf_op)

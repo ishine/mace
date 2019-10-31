@@ -18,7 +18,7 @@ Internal tool for mace_cc_benchmark, mace_cc_test:
 
 python tools/python/run_target.py \
     --target_abi=armeabi-v7a --target_socs=all --target_name=mace_cc_test \
-    --gtest_filter=EnvTest.*  --envs="MACE_CPP_MIN_VLOG_LEVEL=5"
+    --gtest_filter=EnvTest.*  --envs="MACE_CPP_MIN_VLOG_LEVEL=5
 """
 
 from __future__ import absolute_import
@@ -48,7 +48,7 @@ def run_target(target_abi, install_dir, target_obj, device_ids="all"):
 
         # reinstall target
         print("Install target from %s to %s" % (target_obj.path, install_dir))
-        device_target = dev.install(target_obj, install_dir)
+        device_target = dev.install(target_obj, install_dir, install_deps=True)
         print(device_target)
 
         # run on device

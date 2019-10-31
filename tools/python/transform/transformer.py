@@ -97,11 +97,11 @@ class Transformer(base_converter.ConverterInterface):
                 self.add_opencl_informations,
             TransformerRule.SORT_BY_EXECUTION: self.sort_by_execution,
             TransformerRule.UPDATE_DATA_FORMAT: self.update_data_format,
+            TransformerRule.TRANSPOSE_RESHAPE_AND_FLATTEN:
+                self.transform_reshape_and_flatten,
             TransformerRule.TRANSPOSE_DATA_FORMAT: self.transpose_data_format,
             TransformerRule.CHECK_QUANTIZE_INFO:
                 self.check_quantize_info,
-            TransformerRule.TRANSPOSE_CAFFE_RESHAPE_AND_FLATTEN:
-                self.transform_caffe_reshape_and_flatten,
             TransformerRule.TRANSFORM_CHANNEL_SHUFFLE:
                 self.transform_channel_shuffle,
             TransformerRule.QUANTIZE_SPECIFIC_OPS_ONLY:
@@ -304,14 +304,8 @@ class Transformer(base_converter.ConverterInterface):
                        "!= len(replace_op.output)")
 
             for i in six.moves.range(len(op.output)):
-                for consumer_op in self._consumers.get(op.output[i], []):
-                    self.replace(consumer_op.input,
-                                 op.output[i],
-                                 replace_op.output[i])
-
-            # if the op is output node, change replace_op output name to the op
-            # output name
-            for i in six.moves.range(len(op.output)):
+                # if the op is output node, change replace_op output name
+                # to the op output name
                 if op.output[i] in self._option.output_nodes:
                     for consumer in self._consumers.get(
                             replace_op.output[i], []):
@@ -319,6 +313,11 @@ class Transformer(base_converter.ConverterInterface):
                                      replace_op.output[i],
                                      op.output[i])
                     replace_op.output[i] = op.output[i]
+                else:
+                    for consumer_op in self._consumers.get(op.output[i], []):
+                        self.replace(consumer_op.input,
+                                     op.output[i],
+                                     replace_op.output[i])
 
         if remove_input_tensor:
             for input_name in op.input:
@@ -887,7 +886,8 @@ class Transformer(base_converter.ConverterInterface):
 
     def flatten_atrous_conv(self):
         if self._option.device != DeviceType.GPU.value \
-               and self._option.device != DeviceType.APU.value:
+               and self._option.device != DeviceType.APU.value \
+               and self._option.device != DeviceType.HTA.value:
             return
 
         net = self._model
@@ -1009,7 +1009,8 @@ class Transformer(base_converter.ConverterInterface):
                             zero_padding = False
 
                 if height == filter_height and width == filter_width \
-                        and zero_padding:
+                        and zero_padding \
+                        and len(self._consumers[op.input[1]]) == 1:
                     print("transform global conv to fc %s(%s)"
                           % (op.name, op.type))
                     op.type = MaceOp.FullyConnected.name
@@ -1349,9 +1350,9 @@ class Transformer(base_converter.ConverterInterface):
         visited = set()
         sorted_nodes = []
 
-        output_nodes = self._option.check_nodes
+        output_nodes = self._option.check_nodes.keys()
         if not self._quantize_activation_info:
-            output_nodes.update(self._option.output_nodes)
+            output_nodes.extend(self._option.output_nodes)
         for output_node in output_nodes:
             mace_check(output_node in self._producer,
                        "output_tensor %s not existed in model" % output_node)
@@ -1492,6 +1493,13 @@ class Transformer(base_converter.ConverterInterface):
                 print("Transpose crop args: %s(%s)"
                       % (op.name, op.type))
                 self.transpose_shape(offset_arg.ints, [0, 2, 3, 1])
+            elif op.type == MaceOp.Reshape.name:
+                for arg in op.arg:
+                    if arg.name == MaceKeyword.mace_dim_str and \
+                            len(arg.ints) == 4 and \
+                            src_data_format == DataFormat.NCHW and \
+                            has_data_format:
+                        self.transpose_shape(arg.ints, [0, 2, 3, 1])
 
             # transpose op output shape
             if src_data_format == DataFormat.NCHW and \
@@ -1726,16 +1734,18 @@ class Transformer(base_converter.ConverterInterface):
         for op in net.op:
             if op.type == 'FakeQuantWithMinMaxVars' or \
                    op.type == 'FakeQuantWithMinMaxArgs':
-                producer_op = self._producer[op.input[0]]
-                minval = ConverterUtil.get_arg(op, 'min').f
-                maxval = ConverterUtil.get_arg(op, 'max').f
-                quantize_info = \
-                    self.add_quantize_info(producer_op, minval, maxval)
-                self._quantize_activation_info[op.input[0]] = quantize_info
-                # for add -> fakequant pattern
-                self._quantize_activation_info[op.output[0]] = quantize_info
+                if op.input[0] not in self._consts:
+                    producer_op = self._producer[op.input[0]]
+                    minval = ConverterUtil.get_arg(op, 'min').f
+                    maxval = ConverterUtil.get_arg(op, 'max').f
+                    quantize_info = \
+                        self.add_quantize_info(producer_op, minval, maxval)
+                    self._quantize_activation_info[op.input[0]] = quantize_info
+                    # for add -> fakequant pattern
+                    self._quantize_activation_info[op.output[0]] = \
+                        quantize_info
 
-                print(op.input[0], op.output[0])
+                    print(op.input[0], op.output[0])
                 op.type = MaceOp.Identity.name
 
         return False
@@ -1842,6 +1852,8 @@ class Transformer(base_converter.ConverterInterface):
                 quantize_info.scale = scale
                 quantize_info.zero_point = zero
                 self._quantize_activation_info[new_input_name] = quantize_info
+                input_op = self._producer[input_node.name]
+                input_op.quantize_info.extend([quantize_info])
 
         print("Add default quantize info for ops like Pooling, Softmax")
         for op in self._model.op:
@@ -1896,8 +1908,8 @@ class Transformer(base_converter.ConverterInterface):
             elif (op.type == MaceOp.Eltwise.name
                   and not op.quantize_info
                   and len(op.input) == 2
-                  and len(op.input[0]) not in self._consts
-                  and len(op.input[1]) not in self._consts):
+                  and op.input[0] not in self._consts
+                  and op.input[1] not in self._consts):
                 producer_op0 = self._producer[op.input[0]]
                 producer_op1 = self._producer[op.input[1]]
                 if ConverterUtil.get_arg(
@@ -2047,14 +2059,16 @@ class Transformer(base_converter.ConverterInterface):
         arg.i = mace_pb2.GPU_IMAGE if self._option.cl_mem_type == "image"\
             else mace_pb2.GPU_BUFFER
 
-    def transform_caffe_reshape_and_flatten(self):
+    def transform_reshape_and_flatten(self):
         net = self._model
         for op in net.op:
-            if op.type == MaceOp.Reshape.name and \
-                    len(op.input) == 1:
+            if op.type != MaceOp.Reshape.name:
+                continue
+            dim_arg = ConverterUtil.get_arg(op, MaceKeyword.mace_dim_str)
+            shape_tensor = None
+            if len(op.input) == 1:
                 print("Transform Caffe Reshape")
                 dims = []
-                dim_arg = ConverterUtil.get_arg(op, MaceKeyword.mace_dim_str)
                 axis_arg = ConverterUtil.get_arg(op, MaceKeyword.mace_axis_str)
                 # transform caffe reshape op
                 if dim_arg:
@@ -2079,6 +2093,13 @@ class Transformer(base_converter.ConverterInterface):
                     mace_check(False, "Only support reshape and flatten")
                 shape_tensor.int32_data.extend(dims)
                 op.input.append(shape_tensor.name)
+            if len(op.input) == 2 and dim_arg is None:
+                if shape_tensor is None and op.input[1] in self._consts:
+                    shape_tensor = self._consts[op.input[1]]
+                if shape_tensor is not None:
+                    dim_arg = op.arg.add()
+                    dim_arg.name = MaceKeyword.mace_dim_str
+                    dim_arg.ints.extend(shape_tensor.int32_data)
 
     def fold_fc_reshape(self):
         net = self._model
