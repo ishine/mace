@@ -12,14 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mace/ops/arm/fp32/bias_add.h"
-
 #include <arm_neon.h>
+#include "mace/ops/delegator/bias_add.h"
 
 namespace mace {
 namespace ops {
 namespace arm {
 namespace fp32 {
+
+class BiasAdd : public delegator::BiasAdd {
+ public:
+  explicit BiasAdd(const DelegatorParam &param) : delegator::BiasAdd(param) {}
+  ~BiasAdd() = default;
+
+  MaceStatus Compute(const OpContext *context, const Tensor *input,
+                     const Tensor *bias, Tensor *output) override;
+
+ private:
+  void AddBias(const OpContext *context, const Tensor *input,
+               const Tensor *bias, Tensor *output);
+};
 
 MaceStatus BiasAdd::Compute(const OpContext *context,
                             const Tensor *input,
@@ -62,34 +74,68 @@ void BiasAdd::AddBias(const OpContext *context,
 
   utils::ThreadPool
       &thread_pool = context->device()->cpu_runtime()->thread_pool();
-  thread_pool.Compute2D([=](index_t start0, index_t end0, index_t step0,
-                            index_t start1, index_t end1, index_t step1) {
-    for (index_t b = start0; b < end0; b += step0) {
-      for (index_t c = start1; c < end1; c += step1) {
-        const index_t offset = (b * channels + c) * image_size;
-        auto input_ptr = input_data + offset;
-        auto output_ptr = output_data + offset;
-        const float bias = bias_data[c];
-        float32x4_t vbias = vdupq_n_f32(bias);
+  if (bias->dim_size() == 1) {
+    thread_pool.Compute2D([=](index_t start0, index_t end0, index_t step0,
+                              index_t start1, index_t end1, index_t step1) {
+      for (index_t b = start0; b < end0; b += step0) {
+        const index_t b_offset = b * channels;
+        for (index_t c = start1; c < end1; c += step1) {
+          const index_t offset = (b_offset + c) * image_size;
+          auto input_ptr = input_data + offset;
+          auto output_ptr = output_data + offset;
+          const float bias = bias_data[c];
+          float32x4_t vbias = vdupq_n_f32(bias);
 
-        for (index_t i = 0; i < block_count; ++i) {
-          float32x4_t v = vld1q_f32(input_ptr);
-          v = vaddq_f32(v, vbias);
-          vst1q_f32(output_ptr, v);
+          for (index_t i = 0; i < block_count; ++i) {
+            float32x4_t v = vld1q_f32(input_ptr);
+            v = vaddq_f32(v, vbias);
+            vst1q_f32(output_ptr, v);
 
-          input_ptr += 4;
-          output_ptr += 4;
-        }
-        for (index_t i = 0; i < remain; ++i) {
-          (*output_ptr++) = (*input_ptr++) + bias;
+            input_ptr += 4;
+            output_ptr += 4;
+          }
+          for (index_t i = 0; i < remain; ++i) {
+            (*output_ptr++) = (*input_ptr++) + bias;
+          }
         }
       }
-    }
-  }, 0, batch, 1, 0, channels, 1);
+    }, 0, batch, 1, 0, channels, 1);
+  } else {
+    thread_pool.Compute2D([=](index_t start0, index_t end0, index_t step0,
+                              index_t start1, index_t end1, index_t step1) {
+      for (index_t b = start0; b < end0; b += step0) {
+        const index_t b_offset = b * channels;
+        for (index_t c = start1; c < end1; c += step1) {
+          const index_t offset = (b_offset + c) * image_size;
+          auto input_ptr = input_data + offset;
+          auto output_ptr = output_data + offset;
+          const float bias = bias_data[b * channels + c];
+          float32x4_t vbias = vdupq_n_f32(bias);
+
+          for (index_t i = 0; i < block_count; ++i) {
+            float32x4_t v = vld1q_f32(input_ptr);
+            v = vaddq_f32(v, vbias);
+            vst1q_f32(output_ptr, v);
+
+            input_ptr += 4;
+            output_ptr += 4;
+          }
+          for (index_t i = 0; i < remain; ++i) {
+            (*output_ptr++) = (*input_ptr++) + bias;
+          }
+        }
+      }
+    }, 0, batch, 1, 0, channels, 1);
+  }
+}
+
+void RegisterBiasAddDelegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, BiasAdd, DelegatorParam,
+      MACE_DELEGATOR_KEY(BiasAdd, DeviceType::CPU, float, ImplType::NEON));
 }
 
 }  // namespace fp32
 }  // namespace arm
 }  // namespace ops
 }  // namespace mace
-

@@ -13,7 +13,8 @@
 // limitations under the License.
 
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/utils/math.h"
 
 namespace mace {
@@ -53,9 +54,11 @@ class ExpandDimsOp<DeviceType::CPU, T> : public Operation {
   int axis_;
 };
 
-void RegisterExpandDims(OpRegistryBase *op_registry) {
+void RegisterExpandDims(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "ExpandDims", ExpandDimsOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "ExpandDims", ExpandDimsOp,
+                        DeviceType::CPU);
 
   MACE_REGISTER_OP(op_registry, "ExpandDims", ExpandDimsOp,
                    DeviceType::CPU, int32_t);

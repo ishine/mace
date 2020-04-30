@@ -175,9 +175,9 @@ bool RunModel(const std::string &model_name,
   if (status != MaceStatus::MACE_SUCCESS) {
     LOG(WARNING) << "Set openmp or cpu affinity failed.";
   }
-#ifdef MACE_ENABLE_OPENCL
+#if defined(MACE_ENABLE_OPENCL) || defined(MACE_ENABLE_HTA)
   std::shared_ptr<GPUContext> gpu_context;
-  if (device_type == DeviceType::GPU) {
+  if (device_type == DeviceType::GPU || device_type == DeviceType::HTA) {
     const char *storage_path_ptr = getenv("MACE_INTERNAL_STORAGE_PATH");
     const std::string storage_path =
         std::string(storage_path_ptr == nullptr ?
@@ -196,7 +196,12 @@ bool RunModel(const std::string &model_name,
         static_cast<GPUPriorityHint>(FLAGS_gpu_priority_hint));
   }
 #endif  // MACE_ENABLE_OPENCL
-
+#ifdef MACE_ENABLE_HEXAGON
+  // SetHexagonToUnsignedPD() can be called for 8150 family(with new cDSP
+  // firmware) or 8250 family above to run hexagon nn on unsigned PD.
+  // config.SetHexagonToUnsignedPD();
+  config.SetHexagonPower(HEXAGON_NN_CORNER_TURBO, true, 100);
+#endif
   std::unique_ptr<mace::port::ReadOnlyMemoryRegion> model_graph_data =
     make_unique<mace::port::ReadOnlyBufferMemoryRegion>();
   if (FLAGS_model_file != "") {

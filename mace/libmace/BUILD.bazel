@@ -12,6 +12,7 @@ load(
     "if_android",
     "if_android_armv7",
     "if_apu_enabled",
+    "if_bfloat16_enabled",
     "if_darwin",
     "if_hexagon_enabled",
     "if_hta_enabled",
@@ -21,6 +22,7 @@ load(
     "if_opencl_enabled",
     "if_openmp_enabled",
     "if_quantize_enabled",
+    "if_rpcmem_enabled",
 )
 
 cc_library(
@@ -41,16 +43,20 @@ cc_library(
         "-DMACE_ENABLE_OPENCL",
     ]) + if_quantize_enabled([
         "-DMACE_ENABLE_QUANTIZE",
+    ]) + if_bfloat16_enabled([
+        "-DMACE_ENABLE_BFLOAT16",
     ]) + if_hexagon_enabled([
         "-DMACE_ENABLE_HEXAGON",
     ]) + if_hta_enabled([
         "-DMACE_ENABLE_HTA",
     ]) + if_apu_enabled([
         "-DMACE_ENABLE_APU",
+    ]) + if_rpcmem_enabled([
+        "-DMACE_ENABLE_RPCMEM",
     ]),
     deps = [
-        "//mace/ops",
         "//include:public_headers",
+        "//mace/ops",
     ],
     alwayslink = 1,
 )

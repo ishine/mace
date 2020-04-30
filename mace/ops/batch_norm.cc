@@ -16,14 +16,10 @@
 #include <string>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/ops/activation.h"
-
-#if defined(MACE_ENABLE_NEON)
-#include "mace/ops/arm/fp32/activation.h"
-#else
-#include "mace/ops/ref/activation.h"
-#endif
+#include "mace/ops/delegator/activation.h"
 
 #ifdef MACE_ENABLE_OPENCL
 #include "mace/ops/opencl/buffer_transformer.h"
@@ -37,19 +33,25 @@ namespace ops {
 template<DeviceType D, class T>
 class BatchNormOp;
 
-template<>
-class BatchNormOp<DeviceType::CPU, float> : public Operation {
+template<class T>
+class BatchNormOp<DeviceType::CPU, T> : public Operation {
  public:
   explicit BatchNormOp(OpConstructContext *context)
       : Operation(context),
         epsilon_(Operation::GetOptionalArg<float>("epsilon",
                                                   static_cast<float>(1e-4))),
         activation_delegator_(
-            ops::StringToActivationType(
-                Operation::GetOptionalArg<std::string>("activation", "NOOP")),
-            Operation::GetOptionalArg<float>("max_limit", 0.0f),
-            Operation::GetOptionalArg<float>(
-                "leakyrelu_coefficient", 0.0f)) {}
+            delegator::Activation::Create(
+                context->workspace(),
+                MACE_DELEGATOR_KEY(Activation, DeviceType::CPU,
+                                   T, kCpuImplType),
+                delegator::ActivationParam(
+                    ops::StringToActivationType(
+                        Operation::GetOptionalArg<std::string>("activation",
+                                                               "NOOP")),
+                    Operation::GetOptionalArg<float>("max_limit", 0.0f),
+                    Operation::GetOptionalArg<float>("leakyrelu_coefficient",
+                                                     0.0f)))) {}
 
   MaceStatus Run(OpContext *context) override {
     MACE_UNUSED(context);
@@ -90,13 +92,13 @@ class BatchNormOp<DeviceType::CPU, float> : public Operation {
       Tensor::MappingGuard offset_mapper(offset);
       Tensor::MappingGuard output_mapper(output);
 
-      const float *input_ptr = input->data<float>();
-      const float *scale_ptr = scale->data<float>();
-      const float *offset_ptr = offset->data<float>();
-      float *output_ptr = output->mutable_data<float>();
+      const T *input_ptr = input->data<T>();
+      const T *scale_ptr = scale->data<T>();
+      const T *offset_ptr = offset->data<T>();
+      T *output_ptr = output->mutable_data<T>();
 
-      std::vector<float> new_scale;
-      std::vector<float> new_offset;
+      std::vector<T> new_scale;
+      std::vector<T> new_offset;
       if (not_folded) {
         const Tensor *mean = this->Input(MEAN);
         const Tensor *var = this->Input(VAR);
@@ -108,8 +110,8 @@ class BatchNormOp<DeviceType::CPU, float> : public Operation {
         new_offset.resize(channels);
         Tensor::MappingGuard mean_mapper(mean);
         Tensor::MappingGuard var_mapper(var);
-        const float *mean_ptr = mean->data<float>();
-        const float *var_ptr = var->data<float>();
+        const T *mean_ptr = mean->data<T>();
+        const T *var_ptr = var->data<T>();
 
         thread_pool.Compute1D([=, &new_scale, &new_offset](index_t start,
                                                            index_t end,
@@ -121,9 +123,8 @@ class BatchNormOp<DeviceType::CPU, float> : public Operation {
         }, 0, channels, 1);
       }
 
-      const float *scale_data = not_folded ? new_scale.data() : scale_ptr;
-      const float
-          *offset_data = not_folded ? new_offset.data() : offset_ptr;
+      const T *scale_data = not_folded ? new_scale.data() : scale_ptr;
+      const T *offset_data = not_folded ? new_offset.data() : offset_ptr;
 
       index_t channel_size = height * width;
       index_t batch_size = channels * channel_size;
@@ -142,18 +143,14 @@ class BatchNormOp<DeviceType::CPU, float> : public Operation {
       }, 0, batch, 1, 0, channels, 1);
     }
 
-    activation_delegator_.Compute(context, output, output);
+    activation_delegator_->Compute(context, output, output);
 
     return MaceStatus::MACE_SUCCESS;
   }
 
  private:
   float epsilon_;
-#ifdef MACE_ENABLE_NEON
-  arm::fp32::Activation activation_delegator_;
-#else
-  ref::Activation activation_delegator_;
-#endif  // MACE_ENABLE_NEON
+  std::unique_ptr<delegator::Activation> activation_delegator_;
 
  protected:
   MACE_OP_INPUT_TAGS(INPUT, SCALE, OFFSET, MEAN, VAR);
@@ -232,9 +229,10 @@ class BatchNormOp<DeviceType::GPU, float> : public Operation {
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterBatchNorm(OpRegistryBase *op_registry) {
+void RegisterBatchNorm(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "BatchNorm", BatchNormOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "BatchNorm", BatchNormOp, DeviceType::CPU);
   MACE_REGISTER_GPU_OP(op_registry, "BatchNorm", BatchNormOp);
 }
 

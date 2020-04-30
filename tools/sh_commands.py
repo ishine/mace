@@ -70,7 +70,8 @@ def device_lock_path(serialno):
 
 def device_lock(serialno, timeout=7200):
     import filelock
-    return filelock.FileLock(device_lock_path(serialno), timeout=timeout)
+    return filelock.FileLock(device_lock_path(serialno.replace("/", "")),
+                             timeout=timeout)
 
 
 def is_device_locked(serialno):
@@ -100,8 +101,8 @@ def stdout_success(stdout):
 def choose_a_random_device(target_devices, target_abi):
     eligible_devices = [dev for dev in target_devices
                         if target_abi in dev[common.YAMLKeyword.target_abis]]
-    unlocked_devices = \
-        [dev for dev in eligible_devices if not is_device_locked(dev)]
+    unlocked_devices = [dev for dev in eligible_devices if
+                        not is_device_locked(dev[common.YAMLKeyword.address])]
     if len(unlocked_devices) > 0:
         chosen_devices = [random.choice(unlocked_devices)]
     else:
@@ -269,6 +270,8 @@ def bazel_build(target,
                 enable_neon=True,
                 enable_opencl=True,
                 enable_quantize=True,
+                enable_bfloat16=False,
+                enable_rpcmem=True,
                 address_sanitizer=False,
                 symbol_hidden=True,
                 debug_mode=False,
@@ -284,6 +287,8 @@ def bazel_build(target,
             "openmp=%s" % str(enable_openmp).lower(),
             "--define",
             "quantize=%s" % str(enable_quantize).lower(),
+            "--define",
+            "bfloat16=%s" % str(enable_bfloat16).lower(),
             target,
         )
     else:
@@ -301,6 +306,10 @@ def bazel_build(target,
             "opencl=%s" % str(enable_opencl).lower(),
             "--define",
             "quantize=%s" % str(enable_quantize).lower(),
+            "--define",
+            "bfloat16=%s" % str(enable_bfloat16).lower(),
+            "--define",
+            "rpcmem=%s" % str(enable_rpcmem).lower(),
             "--define",
             "hexagon=%s" % str(enable_hexagon).lower(),
             "--define",
@@ -601,17 +610,20 @@ def create_internal_storage_dir(serialno, phone_data_dir):
 
 def push_depended_so_libs(libmace_dynamic_library_path,
                           abi, phone_data_dir, serialno):
-    dep_so_libs = sh.bash(os.environ["ANDROID_NDK_HOME"] + "/ndk-depends",
-                          libmace_dynamic_library_path)
-    src_file = ""
-    for dep in split_stdout(dep_so_libs):
-        if dep == "libgnustl_shared.so":
-            src_file = "%s/sources/cxx-stl/gnu-libstdc++/4.9/libs/" \
-                "%s/libgnustl_shared.so"\
-                       % (os.environ["ANDROID_NDK_HOME"], abi)
-        elif dep == "libc++_shared.so":
-            src_file = "%s/sources/cxx-stl/llvm-libc++/libs/" \
-                 "%s/libc++_shared.so" % (os.environ["ANDROID_NDK_HOME"], abi)
+    src_file = "%s/sources/cxx-stl/llvm-libc++/libs/" \
+               "%s/libc++_shared.so" \
+               % (os.environ["ANDROID_NDK_HOME"], abi)
+    try:
+        dep_so_libs = sh.bash(os.environ["ANDROID_NDK_HOME"] + "/ndk-depends",
+                              libmace_dynamic_library_path)
+    except sh.ErrorReturnCode_127:
+        print("Find no ndk-depends, use default libc++_shared.so")
+    else:
+        for dep in split_stdout(dep_so_libs):
+            if dep == "libgnustl_shared.so":
+                src_file = "%s/sources/cxx-stl/gnu-libstdc++/4.9/libs/" \
+                           "%s/libgnustl_shared.so" \
+                           % (os.environ["ANDROID_NDK_HOME"], abi)
     print("push %s to %s" % (src_file, phone_data_dir))
     adb_push(src_file, phone_data_dir, serialno)
 
@@ -772,15 +784,7 @@ def packaging_lib(libmace_output_dir, project_name):
     six.print_("Start packaging '%s' libs into %s" % (project_name,
                                                       tar_package_path))
     which_sys = platform.system()
-    if which_sys == "Linux":
-        sh.tar(
-            "cvzf",
-            "%s" % tar_package_path,
-            glob.glob("%s/*" % project_dir),
-            "--exclude",
-            "%s/_tmp" % project_dir,
-            _fg=True)
-    elif which_sys == "Darwin":
+    if which_sys == "Linux" or which_sys == "Darwin":
         sh.tar(
             "--exclude",
             "%s/_tmp" % project_dir,

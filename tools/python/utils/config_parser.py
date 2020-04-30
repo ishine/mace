@@ -73,6 +73,7 @@ def parse_device_info(path):
 class ModelKeys(object):
     platform = "platform"
     runtime = "runtime"
+    models = 'models'
     graph_optimize_options = "graph_optimize_options"
     input_tensors = "input_tensors"
     input_shapes = "input_shapes"
@@ -92,10 +93,11 @@ class ModelKeys(object):
     quantize_range_file = "quantize_range_file"
     quantize = "quantize"
     quantize_large_weights = "quantize_large_weights"
+    quantize_stat = "quantize_stat"
     change_concat_ranges = "change_concat_ranges"
     winograd = "winograd"
     cl_mem_type = "cl_mem_type"
-    data_types = "data_types"
+    data_type = "data_type"
     subgraphs = "subgraphs"
     validation_inputs_data = "validation_inputs_data"
 
@@ -174,6 +176,8 @@ def parse_data_type(str):
 def parse_internal_data_type(str):
     if str == 'fp32_fp32':
         return mace_pb2.DT_FLOAT
+    elif str == 'bf16_fp32':
+        return mace_pb2.DT_BFLOAT16
     else:
         return mace_pb2.DT_HALF
 
@@ -186,6 +190,8 @@ def to_list(x):
 
 
 def parse_int_array(xs):
+    if len(xs) is 0:
+        return [1]
     return [int(x) for x in xs.split(",")]
 
 
@@ -200,21 +206,22 @@ def normalize_model_config(conf):
         del conf[ModelKeys.subgraphs]
         conf.update(subgraph)
 
-    print(conf)
     conf[ModelKeys.platform] = parse_platform(conf[ModelKeys.platform])
     conf[ModelKeys.runtime] = parse_device_type(conf[ModelKeys.runtime])
 
-    if ModelKeys.quantize in conf:
-        conf[ModelKeys.data_types] = mace_pb2.DT_FLOAT
+    if ModelKeys.quantize in conf and conf[ModelKeys.quantize] == 1:
+        conf[ModelKeys.data_type] = mace_pb2.DT_FLOAT
     else:
-        if ModelKeys.data_types in conf:
-            conf[ModelKeys.data_types] = parse_internal_data_type(
-                conf[ModelKeys.data_types])
+        if ModelKeys.data_type in conf:
+            conf[ModelKeys.data_type] = parse_internal_data_type(
+                conf[ModelKeys.data_type])
         else:
-            conf[ModelKeys.data_types] = mace_pb2.DT_HALF
+            conf[ModelKeys.data_type] = mace_pb2.DT_HALF
 
     # parse input
     conf[ModelKeys.input_tensors] = to_list(conf[ModelKeys.input_tensors])
+    conf[ModelKeys.input_tensors] = [str(i) for i in
+                                     conf[ModelKeys.input_tensors]]
     input_count = len(conf[ModelKeys.input_tensors])
     conf[ModelKeys.input_shapes] = [parse_int_array(shape) for shape in
                                     to_list(conf[ModelKeys.input_shapes])]
@@ -255,6 +262,8 @@ def normalize_model_config(conf):
 
     # parse output
     conf[ModelKeys.output_tensors] = to_list(conf[ModelKeys.output_tensors])
+    conf[ModelKeys.output_tensors] = [str(i) for i in
+                                      conf[ModelKeys.output_tensors]]
     output_count = len(conf[ModelKeys.output_tensors])
     conf[ModelKeys.output_shapes] = [parse_int_array(shape) for shape in
                                      to_list(conf[ModelKeys.output_shapes])]

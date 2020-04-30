@@ -15,7 +15,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -77,8 +78,9 @@ class SqueezeOp : public SqueezeOpRaw {
   }
 };
 
-void RegisterSqueeze(OpRegistryBase *op_registry) {
+void RegisterSqueeze(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "Squeeze", SqueezeOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Squeeze", SqueezeOp, DeviceType::CPU);
 #ifdef MACE_ENABLE_QUANTIZE
   MACE_REGISTER_OP(op_registry, "Squeeze", SqueezeOp, DeviceType::CPU, uint8_t);
 #endif  // MACE_ENABLE_QUANTIZE

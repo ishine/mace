@@ -41,13 +41,20 @@ enum GPUType {
 };
 
 enum OpenCLVersion {
+  CL_VER_UNKNOWN,
   CL_VER_1_0,
   CL_VER_1_1,
   CL_VER_1_2,
   CL_VER_2_0,
-  CL_VER_UNKNOWN,
+  CL_VER_2_1,
 };
 
+#ifdef MACE_ENABLE_RPCMEM
+enum IONType {
+  QUALCOMM_ION,
+  NONE_ION,
+};
+#endif  // MACE_ENABLE_RPCMEM
 
 const std::string OpenCLErrorToString(cl_int error);
 
@@ -84,6 +91,13 @@ class OpenCLRuntime {
   uint32_t device_compute_units() const;
   Tuner<uint32_t> *tuner();
   bool is_opencl_avaliable();
+
+#ifdef MACE_ENABLE_RPCMEM
+  IONType ion_type() const;
+  uint32_t qcom_ext_mem_padding() const;
+  uint32_t qcom_page_size() const;
+  uint32_t qcom_host_cache_policy() const;
+#endif  // MACE_ENABLE_RPCMEM
 
   void GetCallStats(const cl::Event &event, CallStats *stats);
   uint64_t GetDeviceMaxWorkGroupSize();
@@ -143,6 +157,13 @@ class OpenCLRuntime {
   bool out_of_range_check_;
   uint64_t device_global_mem_cache_size_;
   uint32_t device_compute_units_;
+
+#ifdef MACE_ENABLE_RPCMEM
+  IONType ion_type_;
+  uint32_t qcom_ext_mem_padding_;
+  uint32_t qcom_page_size_;
+  uint32_t qcom_host_cache_policy_;
+#endif  // MACE_ENABLE_RPCMEM
 };
 
 class OpenCLProfilingTimer : public Timer {

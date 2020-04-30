@@ -330,10 +330,20 @@ MaceStatus Deconv2dK2x2S2::Compute(const OpContext *context,
     }
   }, 0, batch, 1, 0, outch, 1);
 
-
   UnPadOutput(*out_tensor, out_pad_size, output);
 
   return MaceStatus::MACE_SUCCESS;
+}
+
+void RegisterDeconv2dK2x2Delegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, Deconv2dK2x2S1, delegator::Deconv2dParam,
+      MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU,
+                            float, ImplType::NEON, K2x2S1));
+  MACE_REGISTER_DELEGATOR(
+      registry, Deconv2dK2x2S2, delegator::Deconv2dParam,
+      MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU,
+                            float, ImplType::NEON, K2x2S2));
 }
 
 }  // namespace fp32

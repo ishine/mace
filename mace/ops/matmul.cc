@@ -19,25 +19,18 @@
 #include <string>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/core/tensor.h"
+#include "mace/ops/delegator/gemm.h"
+#include "mace/ops/delegator/gemv.h"
 #include "mace/utils/math.h"
-
-#ifdef MACE_ENABLE_NEON
-#include "mace/ops/arm/fp32/gemm.h"
-#include "mace/ops/arm/fp32/gemv.h"
-
-#ifdef MACE_ENABLE_QUANTIZE
-#include "mace/ops/arm/q8/gemv.h"
-#endif  // MACE_ENABLE_QUANTIZE
-
-#else
-#include "mace/ops/ref/gemm.h"
-#include "mace/ops/ref/gemv.h"
-#endif  // MACE_ENABLE_NEON
 
 #ifdef MACE_ENABLE_QUANTIZE
 #include "mace/ops/common/gemmlowp_util.h"
+#ifdef MACE_ENABLE_NEON
+#include "mace/ops/arm/q8/gemv.h"
+#endif  // MACE_ENABLE_NEON
 #endif  // MACE_ENABLE_QUANTIZE
 
 #ifdef MACE_ENABLE_OPENCL
@@ -99,11 +92,19 @@ class MatMulOpBase : public Operation {
 template<DeviceType D, class T>
 class MatMulOp;
 
-template<>
-class MatMulOp<CPU, float> : public MatMulOpBase {
+template<class T>
+class MatMulOp<CPU, T> : public MatMulOpBase {
  public:
   explicit MatMulOp(OpConstructContext *context)
-      : MatMulOpBase(context) {}
+      : MatMulOpBase(context),
+        gemm_(delegator::Gemm::Create(
+            context->workspace(),
+            MACE_DELEGATOR_KEY(Gemm, DeviceType::CPU, T, kCpuImplType),
+            delegator::GemmParam())),
+        gemv_(delegator::Gemv::Create(
+            context->workspace(),
+            MACE_DELEGATOR_KEY(Gemv, DeviceType::CPU, T, kCpuImplType),
+            DelegatorParam())) {}
 
   MaceStatus Run(OpContext *context) override {
     Validate();
@@ -154,50 +155,50 @@ class MatMulOp<CPU, float> : public MatMulOpBase {
     MACE_RETURN_IF_ERROR(C->Resize(output_shape));
 
     if (rows == 1 && transpose_b_) {
-      return gemv_.Compute(context,
-                           rhs,
-                           lhs,
-                           bias,
-                           batch,
-                           cols,
-                           depth,
-                           rhs_batched,
-                           lhs_batched,
-                           C);
+      return gemv_->Compute(context,
+                            rhs,
+                            lhs,
+                            bias,
+                            batch,
+                            cols,
+                            depth,
+                            rhs_batched,
+                            lhs_batched,
+                            C);
     } else if (cols == 1 && !transpose_a_) {
-      return gemv_.Compute(context,
-                           lhs,
-                           rhs,
-                           bias,
-                           batch,
-                           rows,
-                           depth,
-                           lhs_batched,
-                           rhs_batched,
-                           C);
+      return gemv_->Compute(context,
+                            lhs,
+                            rhs,
+                            bias,
+                            batch,
+                            rows,
+                            depth,
+                            lhs_batched,
+                            rhs_batched,
+                            C);
     } else {
       context->device()->scratch_buffer()->Rewind();
-      MaceStatus ret = gemm_.Compute(context,
-                                     lhs,
-                                     rhs,
-                                     batch,
-                                     lhs_rows,
-                                     lhs_cols,
-                                     rhs_rows,
-                                     rhs_cols,
-                                     transpose_a_,
-                                     transpose_b_,
-                                     false,
-                                     lhs_batched,
-                                     rhs_batched,
-                                     C);
+      MaceStatus ret = gemm_->Compute(context,
+                                      lhs,
+                                      rhs,
+                                      batch,
+                                      lhs_rows,
+                                      lhs_cols,
+                                      rhs_rows,
+                                      rhs_cols,
+                                      transpose_a_,
+                                      transpose_b_,
+                                      false,
+                                      lhs_batched,
+                                      rhs_batched,
+                                      C);
       if (bias != nullptr) {
         MACE_CHECK(bias->dim_size() == 1 && bias->dim(0) == cols,
                    "bias' dim should be <= 2.");
         Tensor::MappingGuard bias_guard(bias);
         Tensor::MappingGuard c_guard(C);
-        const float *bias_data = bias->data<float>();
-        float *c_data = C->mutable_data<float>();
+        const T *bias_data = bias->data<T>();
+        T *c_data = C->mutable_data<T>();
 
         utils::ThreadPool
             &thread_pool = context->device()->cpu_runtime()->thread_pool();
@@ -217,13 +218,8 @@ class MatMulOp<CPU, float> : public MatMulOpBase {
   }
 
  private:
-#ifdef MACE_ENABLE_NEON
-  arm::fp32::Gemm gemm_;
-  arm::fp32::Gemv gemv_;
-#else
-  ref::Gemv<float> gemv_;
-  ref::Gemm<float> gemm_;
-#endif  // MACE_ENABLE_NEON
+  std::unique_ptr<delegator::Gemm> gemm_;
+  std::unique_ptr<delegator::Gemv> gemv_;
 };
 
 #ifdef MACE_ENABLE_QUANTIZE
@@ -234,6 +230,10 @@ class MatMulFixpointImpl;
 template<gemmlowp::MapOrder AOrder, gemmlowp::MapOrder BOrder>
 class MatMulFixpointImpl<AOrder, BOrder, uint8_t> {
  public:
+#ifdef MACE_ENABLE_NEON
+  MatMulFixpointImpl<AOrder, BOrder, uint8_t>()
+      : gemv_kernel_(DelegatorParam()) {}
+#endif  // MACE_ENABLE_NEON
   void operator()(OpContext *context,
                   const Tensor *A,
                   const Tensor *B,
@@ -318,6 +318,10 @@ class MatMulFixpointImpl<AOrder, BOrder, uint8_t> {
 template<gemmlowp::MapOrder AOrder, gemmlowp::MapOrder BOrder>
 class MatMulFixpointImpl<AOrder, BOrder, int32_t> {
  public:
+#ifdef MACE_ENABLE_NEON
+  MatMulFixpointImpl<AOrder, BOrder, int32_t>()
+      : gemv_kernel_(DelegatorParam()) {}
+#endif  // MACE_ENABLE_NEON
   void operator()(OpContext *context,
                   const Tensor *A,
                   const Tensor *B,
@@ -513,7 +517,7 @@ class MatMulOp<DeviceType::GPU, float> : public MatMulOpBase {
 };
 #endif  // MACE_ENABLE_OPENCL
 
-#if defined(MACE_ENABLE_NEON) && defined(__ANDROID__)
+#if defined(MACE_ENABLE_FP16_NEON) && defined(__ANDROID__)
 template <>
 class MatMulOp<CPU, float16_t> : public MatMulOpBase {
  public:
@@ -590,21 +594,23 @@ class MatMulOp<CPU, float16_t> : public MatMulOpBase {
 
  private:
 };
-#endif  // MACE_ENABLE_NEON
+#endif  // MACE_ENABLE_FP16_NEON
 
-void RegisterMatMul(OpRegistryBase *op_registry) {
+void RegisterMatMul(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "MatMul", MatMulOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "MatMul", MatMulOp,
+                        DeviceType::CPU);
 
 #ifdef MACE_ENABLE_QUANTIZE
   MACE_REGISTER_OP(op_registry, "MatMul", MatMulOp,
                    DeviceType::CPU, uint8_t);
 #endif  // MACE_ENABLE_QUANTIZE
 
-#if defined(MACE_ENABLE_NEON) && defined(__ANDROID__)
+#if defined(MACE_ENABLE_FP16_NEON) && defined(__ANDROID__)
   MACE_REGISTER_OP(op_registry, "MatMul", MatMulOp,
                    DeviceType::CPU, float16_t);
-#endif  // MACE_ENABLE_NEON
+#endif  // MACE_ENABLE_FP16_NEON && __ANDROID__
 }
 
 }  // namespace ops

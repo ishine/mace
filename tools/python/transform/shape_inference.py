@@ -52,6 +52,8 @@ class ShapeInference(object):
             MaceOp.PriorBox.name: self.infer_shape_prior_box,
             MaceOp.Reshape.name: self.infer_shape_reshape,
             MaceOp.ResizeBilinear.name: self.infer_shape_resize_bilinear,
+            MaceOp.LpNorm.name: self.infer_shape_general,
+            MaceOp.MVNorm.name: self.infer_shape_general,
         }
 
         self._net = net
@@ -206,7 +208,7 @@ class ShapeInference(object):
     def infer_shape_slice(self, op):
         output_shape = self._output_shape_cache[op.input[0]]
         axis = ConverterUtil.get_arg(op, MaceKeyword.mace_axis_str).i
-        output_shape[axis] /= len(op.output)
+        output_shape[axis] = (int)(output_shape[axis] / len(op.output))
         output_shapes = []
         for _ in op.output:
             output_shapes.append(output_shape)
@@ -253,7 +255,7 @@ class ShapeInference(object):
         aspect_ratio = ConverterUtil.get_arg(op, MaceKeyword.mace_aspect_ratio_str).floats  # noqa
         num_prior = len(aspect_ratio) * len(min_size) + len(max_size)
 
-        output_shape[2] = num_prior * input_h * input_w * 4
+        output_shape[2] = int(num_prior * input_h * input_w * 4)
         self.add_output_shape(op, [output_shape])
 
     def infer_shape_reshape(self, op):
@@ -275,7 +277,7 @@ class ShapeInference(object):
                     output_shape[i] = dim[i]
                     product *= dim[i]
             if idx != -1:
-                output_shape[idx] = input_size / product
+                output_shape[idx] = int(input_size / product)
             self.add_output_shape(op, [output_shape])
         else:
             output_shape = []

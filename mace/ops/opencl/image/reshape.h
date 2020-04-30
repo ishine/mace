@@ -20,8 +20,8 @@
 #include <vector>
 #include <memory>
 
-#include "mace/core/operator.h"
-#include "mace/ops/opencl/helper.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/runtime/opencl/opencl_helper.h"
 #include "mace/ops/opencl/buffer_transform_kernel.h"
 
 namespace mace {

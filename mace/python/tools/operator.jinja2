@@ -64,7 +64,8 @@ namespace {{tag}} {
 {% for i in range(start, end) %}
 
 void CreateOperator{{i}}(mace::OperatorDef *op) {
-  MACE_LATENCY_LOGGER(2, "Create operator {{ net.op[i].name }}");
+  MACE_LATENCY_LOGGER(2, "Create operator",
+    {{ net.op[i].name|default("undefined")|tojson }});
 
   mace::Argument *arg = nullptr;
   op->mutable_arg()->Reserve({{ net.op[i].arg|length }});
@@ -137,7 +138,7 @@ void CreateOperator{{i}}(mace::OperatorDef *op) {
     quantize_info{{j}}->set_maxval({{ net.op[i].quantize_info[j].maxval }});
   {% endfor %}
 
-  {% if device == 3 %}
+  {% if device == 3 or device == 4 %}
     op->set_padding({{ net.op[i].padding }});
     {% if net.op[i].node_input | length > 0 %}
     std::vector<int> input_node_ids({ {{ net.op[i].node_input | map(attribute='node_id') | join(', ') }} });

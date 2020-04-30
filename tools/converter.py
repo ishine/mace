@@ -85,6 +85,7 @@ InOutDataType = Enum('InputDataType',
 FPDataTypeStrs = [
     "fp16_fp32",
     "fp32_fp32",
+    "bf16_fp32",
 ]
 
 FPDataType = Enum('GPUDataType', [(ele, ele) for ele in FPDataTypeStrs],
@@ -170,7 +171,16 @@ def parse_device_type(runtime):
     return device_type
 
 
-def get_hexagon_mode(configs):
+def bfloat16_enabled(configs):
+    for model_name in configs[YAMLKeyword.models]:
+        model_config = configs[YAMLKeyword.models][model_name]
+        dtype = model_config.get(YAMLKeyword.data_type, FPDataType.fp16_fp32)
+        if dtype == FPDataType.bf16_fp32:
+            return True
+    return False
+
+
+def hexagon_enabled(configs):
     runtime_list = []
     for model_name in configs[YAMLKeyword.models]:
         model_runtime = \
@@ -183,7 +193,7 @@ def get_hexagon_mode(configs):
     return False
 
 
-def get_hta_mode(configs):
+def hta_enabled(configs):
     runtime_list = []
     for model_name in configs[YAMLKeyword.models]:
         model_runtime = \
@@ -196,7 +206,7 @@ def get_hta_mode(configs):
     return False
 
 
-def get_apu_mode(configs):
+def apu_enabled(configs):
     runtime_list = []
     for model_name in configs[YAMLKeyword.models]:
         model_runtime = \
@@ -209,7 +219,7 @@ def get_apu_mode(configs):
     return False
 
 
-def get_opencl_mode(configs):
+def opencl_enabled(configs):
     runtime_list = []
     for model_name in configs[YAMLKeyword.models]:
         model_runtime = \
@@ -217,12 +227,13 @@ def get_opencl_mode(configs):
                 YAMLKeyword.runtime, "")
         runtime_list.append(model_runtime.lower())
 
-    if RuntimeType.gpu in runtime_list or RuntimeType.cpu_gpu in runtime_list:
+    if RuntimeType.gpu in runtime_list or RuntimeType.cpu_gpu in runtime_list \
+            or RuntimeType.hta in runtime_list:
         return True
     return False
 
 
-def get_quantize_mode(configs):
+def quantize_enabled(configs):
     for model_name in configs[YAMLKeyword.models]:
         quantize = \
             configs[YAMLKeyword.models][model_name].get(
@@ -278,8 +289,10 @@ def get_model_files(model_config, model_output_dir):
     model_file_path = model_config[YAMLKeyword.model_file_path]
     model_sha256_checksum = model_config[YAMLKeyword.model_sha256_checksum]
     weight_file_path = model_config.get(YAMLKeyword.weight_file_path, "")
-    weight_sha256_checksum = model_config.get(YAMLKeyword.weight_sha256_checksum, "")  # noqa
-    quantize_range_file_path = model_config.get(YAMLKeyword.quantize_range_file, "")  # noqa
+    weight_sha256_checksum = \
+        model_config.get(YAMLKeyword.weight_sha256_checksum, "")
+    quantize_range_file_path = \
+        model_config.get(YAMLKeyword.quantize_range_file, "")
     model_file = model_file_path
     weight_file = weight_file_path
     quantize_range_file = quantize_range_file_path
@@ -735,11 +748,12 @@ def build_model_lib(configs, address_sanitizer, debug_mode):
             MODEL_LIB_TARGET,
             abi=target_abi,
             toolchain=toolchain,
-            enable_hexagon=get_hexagon_mode(configs),
-            enable_hta=get_hta_mode(configs),
-            enable_apu=get_apu_mode(configs),
-            enable_opencl=get_opencl_mode(configs),
-            enable_quantize=get_quantize_mode(configs),
+            enable_hexagon=hexagon_enabled(configs),
+            enable_hta=hta_enabled(configs),
+            enable_apu=apu_enabled(configs),
+            enable_opencl=opencl_enabled(configs),
+            enable_quantize=quantize_enabled(configs),
+            enable_bfloat16=bfloat16_enabled(configs),
             address_sanitizer=address_sanitizer,
             symbol_hidden=get_symbol_hidden_mode(debug_mode),
             debug_mode=debug_mode
@@ -793,6 +807,9 @@ def convert_func(flags):
     if os.path.exists(ENGINE_CODEGEN_DIR):
         sh.rm("-rf", ENGINE_CODEGEN_DIR)
 
+    if flags.quantize_stat:
+        configs[YAMLKeyword.quantize_stat] = flags.quantize_stat
+
     if flags.model_data_format:
         model_data_format = flags.model_data_format
     else:
@@ -805,7 +822,12 @@ def convert_func(flags):
     else:
         model_graph_format = configs.get(YAMLKeyword.model_graph_format,
                                          "file")
-    if model_graph_format == ModelFormat.code:
+    embed_graph_def = model_graph_format == ModelFormat.code
+    if flags.enable_micro:
+        mace_check((not embed_model_data) and (not embed_graph_def),
+                   ModuleName.YAML_CONFIG,
+                   "You should specify file mode to convert micro model.")
+    if embed_graph_def:
         os.makedirs(model_header_dir)
         sh_commands.gen_mace_engine_factory_source(
             configs[YAMLKeyword.models].keys(),
@@ -813,9 +835,16 @@ def convert_func(flags):
         sh.cp("-f", glob.glob("mace/codegen/engine/*.h"),
               model_header_dir)
 
-    convert.convert(configs, MODEL_CODEGEN_DIR)
+    convert.convert(configs, MODEL_CODEGEN_DIR, flags.enable_micro)
 
     for model_name, model_config in configs[YAMLKeyword.models].items():
+        if flags.enable_micro:
+            data_type = model_config.get(YAMLKeyword.data_type, "")
+            mace_check(data_type == FPDataType.fp32_fp32.value or
+                       data_type == FPDataType.bf16_fp32.value,
+                       ModuleName.YAML_CONFIG,
+                       "You should specify fp32_fp32 or bf16_fp32 data type "
+                       "to convert micro model.")
         model_codegen_dir = "%s/%s" % (MODEL_CODEGEN_DIR, model_name)
         encrypt.encrypt(model_name,
                         "%s/model/%s.pb" % (model_codegen_dir, model_name),
@@ -834,6 +863,9 @@ def convert_func(flags):
             sh.mv("-f",
                   '%s/model/%s.data' % (model_codegen_dir, model_name),
                   model_output_dir)
+            if flags.enable_micro:
+                sh.mv("-f", '%s/model/%s_micro.tar.gz' %
+                      (model_codegen_dir, model_name), model_output_dir)
         else:
             if not embed_model_data:
                 sh.mv("-f",
@@ -878,12 +910,13 @@ def build_mace_run(configs, target_abi, toolchain, enable_openmp,
         mace_run_target,
         abi=target_abi,
         toolchain=toolchain,
-        enable_hexagon=get_hexagon_mode(configs),
-        enable_hta=get_hta_mode(configs),
-        enable_apu=get_apu_mode(configs),
+        enable_hexagon=hexagon_enabled(configs),
+        enable_hta=hta_enabled(configs),
+        enable_apu=apu_enabled(configs),
         enable_openmp=enable_openmp,
-        enable_opencl=get_opencl_mode(configs),
-        enable_quantize=get_quantize_mode(configs),
+        enable_opencl=opencl_enabled(configs),
+        enable_quantize=quantize_enabled(configs),
+        enable_bfloat16=bfloat16_enabled(configs),
         address_sanitizer=address_sanitizer,
         symbol_hidden=get_symbol_hidden_mode(debug_mode, mace_lib_type),
         debug_mode=debug_mode,
@@ -1017,6 +1050,10 @@ def parse_args():
         '--address_sanitizer',
         action="store_true",
         help="Whether to use address sanitizer to check memory error")
+    convert_run_parent_parser.add_argument(
+        "--quantize_stat",
+        action="store_true",
+        help="whether to stat quantization range.")
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
@@ -1024,6 +1061,10 @@ def parse_args():
         'convert',
         parents=[all_type_parent_parser, convert_run_parent_parser],
         help='convert to mace model (file or code)')
+    convert.add_argument(
+        "--enable_micro",
+        action="store_true",
+        help="enable convert micro.")
     convert.set_defaults(func=convert_func)
 
     run = subparsers.add_parser(
@@ -1121,10 +1162,6 @@ def parse_args():
         type=float,
         default=0.0,
         help="[mock runtime failure ratio].")
-    run.add_argument(
-        "--quantize_stat",
-        action="store_true",
-        help="whether to stat quantization range.")
     run.add_argument(
         "--input_dir",
         type=str,

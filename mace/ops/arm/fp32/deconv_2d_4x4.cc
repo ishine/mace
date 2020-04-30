@@ -449,7 +449,6 @@ MaceStatus Deconv2dK4x4S2::Compute(const OpContext *context,
   const index_t outw = out_shape[3];
   const index_t out_img_size = outh * outw;
 
-
   utils::ThreadPool
       &thread_pool = context->device()->cpu_runtime()->thread_pool();
 
@@ -573,6 +572,17 @@ MaceStatus Deconv2dK4x4S2::Compute(const OpContext *context,
   UnPadOutput(*out_tensor, out_pad_size, output);
 
   return MaceStatus::MACE_SUCCESS;
+}
+
+void RegisterDeconv2dK4x4Delegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, Deconv2dK4x4S1, delegator::Deconv2dParam,
+      MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU,
+                            float, ImplType::NEON, K4x4S1));
+  MACE_REGISTER_DELEGATOR(
+      registry, Deconv2dK4x4S2, delegator::Deconv2dParam,
+      MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU,
+                            float, ImplType::NEON, K4x4S2));
 }
 
 }  // namespace fp32

@@ -12,16 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mace/ops/ref/bias_add.h"
+#include "mace/ops/delegator/bias_add.h"
 
 namespace mace {
 namespace ops {
 namespace ref {
 
-MaceStatus BiasAdd::Compute(const OpContext *context,
-                            const Tensor *input,
-                            const Tensor *bias,
-                            Tensor *output) {
+template<typename T>
+class BiasAdd : public delegator::BiasAdd {
+ public:
+  explicit BiasAdd(const DelegatorParam &param) : delegator::BiasAdd(param) {}
+  ~BiasAdd() = default;
+
+  MaceStatus Compute(const OpContext *context, const Tensor *input,
+                     const Tensor *bias, Tensor *output) override;
+
+ private:
+  void AddBias(const OpContext *context, const Tensor *input,
+               const Tensor *bias, Tensor *output);
+};
+
+template<typename T>
+MaceStatus BiasAdd<T>::Compute(const OpContext *context,
+                               const Tensor *input,
+                               const Tensor *bias,
+                               Tensor *output) {
   Tensor::MappingGuard input_guard(input);
   Tensor::MappingGuard bias_guard(bias);
   if (input != output) {
@@ -41,14 +56,15 @@ MaceStatus BiasAdd::Compute(const OpContext *context,
   return MaceStatus::MACE_SUCCESS;
 }
 
-void BiasAdd::AddBias(const OpContext *context,
-                      const Tensor *input,
-                      const Tensor *bias,
-                      mace::Tensor *output) {
+template<typename T>
+void BiasAdd<T>::AddBias(const OpContext *context,
+                         const Tensor *input,
+                         const Tensor *bias,
+                         mace::Tensor *output) {
   MACE_UNUSED(context);
-  auto input_data = input->data<float>();
-  auto bias_data = bias->data<float>();
-  auto output_data = output->mutable_data<float>();
+  auto input_data = input->data<T>();
+  auto bias_data = bias->data<T>();
+  auto output_data = output->mutable_data<T>();
 
   const index_t batch = input->dim(0);
   const index_t channels = input->dim(1);
@@ -56,18 +72,28 @@ void BiasAdd::AddBias(const OpContext *context,
   const index_t width = output->dim(3);
   const index_t image_size = height * width;
 
+  auto bias_b = bias->dim_size() == 1 ? 0 : bias->shape()[1];
   for (index_t b = 0; b < batch; ++b) {
     for (index_t c = 0; c < channels; ++c) {
       const index_t offset = (b * channels + c) * image_size;
       auto input_ptr = input_data + offset;
       auto output_ptr = output_data + offset;
-      const float bias = bias_data[c];
+      const float bias = bias_data[bias_b * channels + c];
 
       for (index_t i = 0; i < image_size; ++i) {
         (*output_ptr++) = (*input_ptr++) + bias;
       }
     }
   }
+}
+
+void RegisterBiasAddDelegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, BiasAdd<float>, DelegatorParam,
+      MACE_DELEGATOR_KEY(BiasAdd, DeviceType::CPU, float, ImplType::REF));
+  MACE_REGISTER_BF16_DELEGATOR(
+      registry, BiasAdd<BFloat16>, DelegatorParam,
+      MACE_DELEGATOR_KEY(BiasAdd, DeviceType::CPU, BFloat16, ImplType::REF));
 }
 
 }  // namespace ref

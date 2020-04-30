@@ -27,7 +27,8 @@ namespace mace {
 
 class HexagonDSPWrapper : public HexagonControlWrapper {
  public:
-  HexagonDSPWrapper() = default;
+  HexagonDSPWrapper();
+  ~HexagonDSPWrapper();
 
   int GetVersion() override;
   bool Config() override;
@@ -46,6 +47,17 @@ class HexagonDSPWrapper : public HexagonControlWrapper {
   void ResetPerfInfo() override;
   void SetDebugLevel(int level) override;
 
+  static bool SetPower(HexagonNNCornerType corner,
+                       bool dcvs_enable,
+                       int latency);
+  static bool RequestUnsignedPD();
+
+ private:
+  uint64_t GetLastExecuteCycles();
+
+  bool log_execute_time_;
+  std::vector<InOutInfo> input_info_;
+  std::vector<InOutInfo> output_info_;
   MACE_DISABLE_COPY_AND_ASSIGN(HexagonDSPWrapper);
 };
 }  // namespace mace

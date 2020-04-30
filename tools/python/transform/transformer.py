@@ -20,6 +20,7 @@ import six
 
 from py_proto import mace_pb2
 from transform import base_converter
+from transform.base_converter import ActivationType
 from transform.base_converter import ConverterUtil
 from transform.base_converter import DataFormat
 from transform.base_converter import DeviceType
@@ -48,7 +49,7 @@ class Transformer(base_converter.ConverterInterface):
         self._registered_transformers = {
             TransformerRule.TRANSFORM_FAKE_QUANTIZE:
                 self.transform_fake_quantize,
-            TransformerRule.REMOVE_IDENTITY_OP: self.remove_identity_op,
+            TransformerRule.REMOVE_USELESS_OP: self.remove_useless_op,
             TransformerRule.TRANSFORM_GLOBAL_POOLING:
                 self.transform_global_pooling,
             TransformerRule.TRANSFORM_LSTMCELL_ZEROSTATE:
@@ -99,6 +100,8 @@ class Transformer(base_converter.ConverterInterface):
             TransformerRule.UPDATE_DATA_FORMAT: self.update_data_format,
             TransformerRule.TRANSPOSE_RESHAPE_AND_FLATTEN:
                 self.transform_reshape_and_flatten,
+            TransformerRule.TRANSPOSE_SHAPE_TENSOR_TO_PARAM:
+                self.transform_shape_tensor_to_param,
             TransformerRule.TRANSPOSE_DATA_FORMAT: self.transpose_data_format,
             TransformerRule.CHECK_QUANTIZE_INFO:
                 self.check_quantize_info,
@@ -347,15 +350,15 @@ class Transformer(base_converter.ConverterInterface):
 
         return False
 
-    def remove_identity_op(self):
+    def remove_useless_op(self):
         net = self._model
         for op in net.op:
             if op.type == 'Identity':
-                print("Remove identity: %s(%s)" % (op.name, op.type))
+                print("Remove useless op: %s(%s)" % (op.name, op.type))
                 self.safe_remove_node(op,
                                       self._producer.get(op.input[0], None))
                 return True
-            if op.type == 'Reshape' and \
+            elif op.type == 'Reshape' and \
                     op.output_shape[0].dims == \
                     self.get_tensor_shape(op.input[0]):
                 print("Remove useless reshape: %s(%s)" % (op.name, op.type))
@@ -939,8 +942,11 @@ class Transformer(base_converter.ConverterInterface):
                         # update output shape
                         conv_op.output_shape[0].dims[:] = \
                             b2s_op.output_shape[0].dims[:]
+                        conv_op.output[0] = b2s_op.output[0]
+                        conv_op.name = b2s_op.name
 
                         self.safe_remove_node(op, None)
+                        self.replace_quantize_info(b2s_op, conv_op)
                         self.safe_remove_node(b2s_op, conv_op)
                         return True
         return False
@@ -955,10 +961,17 @@ class Transformer(base_converter.ConverterInterface):
                 or op.type == MaceOp.BatchNorm.name) \
                     and len(self._consumers.get(op.output[0], [])) == 1:
                 consumer_op = self._consumers[op.output[0]][0]
-                if consumer_op.type == MaceOp.Activation.name \
-                        and ConverterUtil.get_arg(
-                            consumer_op,
-                            MaceKeyword.mace_activation_type_str).s != 'PRELU':
+                if consumer_op.type == MaceOp.Activation.name:
+                    act_type_arg = ConverterUtil.get_arg(
+                        consumer_op, MaceKeyword.mace_activation_type_str)
+                    act_type = act_type_arg.s.decode()
+                    if act_type == ActivationType.PRELU.name:
+                        continue
+                    # during quantization, only fold relu/relux
+                    if (self._option.quantize_stat or self._option.quantize) \
+                            and act_type not in [ActivationType.RELU.name,
+                                                 ActivationType.RELUX.name]:
+                        continue
                     print("Fold activation: %s(%s)" % (op.name, op.type))
                     op.name = consumer_op.name
                     op.output[0] = consumer_op.output[0]
@@ -1111,6 +1124,17 @@ class Transformer(base_converter.ConverterInterface):
                     filter.float_data[:] = filter_data.flat
                     filter.dims[:] = filter_data.shape
                     transposed_filter.add(op.input[1])
+                elif op.type == MaceOp.DepthwiseConv2d.name and\
+                        filter_format == DataFormat.OIHW and\
+                        self._option.device == DeviceType.CPU.value and\
+                        op.input[1] not in transposed_filter:
+                    filter = self._consts[op.input[1]]
+                    filter_data = np.array(filter.float_data).reshape(
+                        filter.dims)
+                    filter_data = filter_data.transpose(2, 3, 1, 0)
+                    filter.float_data[:] = filter_data.flat
+                    filter.dims[:] = filter_data.shape
+                    transposed_filter.add(op.input[1])
             # deconv's filter's output channel and input channel is reversed
             for op in net.op:
                 if op.type == MaceOp.Deconv2D.name and \
@@ -1127,6 +1151,19 @@ class Transformer(base_converter.ConverterInterface):
         elif self._option.quantize and \
                 (self._option.device == DeviceType.HEXAGON.value or
                  self._option.device == DeviceType.HTA.value):
+            for op in net.op:
+                # from HWOI to OHWI, deconv is unique
+                if op.type == MaceOp.Deconv2D.name \
+                        and op.input[1] in self._consts \
+                        and op.input[1] not in transposed_deconv_filter:
+                    filter = self._consts[op.input[1]]
+                    filter_data = np.array(filter.float_data).reshape(
+                        filter.dims)
+                    filter_data = filter_data.transpose(2, 0, 1, 3)
+                    filter.float_data[:] = filter_data.flat
+                    filter.dims[:] = filter_data.shape
+                    transposed_deconv_filter.add(op.input[1])
+
             print("Transpose filters to HWIO/HWIM")
             mace_check(filter_format == DataFormat.HWIO,
                        "HEXAGON only support HWIO/HWIM filter format.")
@@ -1350,7 +1387,7 @@ class Transformer(base_converter.ConverterInterface):
         visited = set()
         sorted_nodes = []
 
-        output_nodes = self._option.check_nodes.keys()
+        output_nodes = list(self._option.check_nodes.keys())
         if not self._quantize_activation_info:
             output_nodes.extend(self._option.output_nodes)
         for output_node in output_nodes:
@@ -1373,6 +1410,26 @@ class Transformer(base_converter.ConverterInterface):
                 out_shape.dims for out_shape in op.output_shape]))
         return False
 
+    def is_transposable_data_format_ops(self, op):
+        if op.type == MaceOp.Reshape:
+            input_op = self._producer[op.input[0]]
+            input_dims = input_op.output_shape[0].dims
+            output_dims = op.output_shape[0].dims
+            tranposable = True
+            if len(input_op.output_shape) != 1 or \
+                    len(input_dims) != 4 or len(output_dims) != 4:
+                tranposable = False
+            else:
+                in_b, in_h, in_w, in_c = self.sort_feature_map_shape(
+                    input_dims, ConverterUtil.data_format(input_op))
+                ou_b, ou_h, ou_w, ou_c = self.sort_feature_map_shape(
+                    output_dims, ConverterUtil.data_format(op))
+                tranposable = (in_b == ou_b and in_c == ou_c)
+            if not tranposable:
+                print("In this model, reshape is not transposable op.")
+                return tranposable
+        return op.type in MaceTransposableDataFormatOps
+
     def update_data_format(self):
         print("update data format")
         net = self._model
@@ -1384,7 +1441,7 @@ class Transformer(base_converter.ConverterInterface):
                 df_arg.name = MaceKeyword.mace_data_format_str
             if op.type in MaceFixedDataFormatOps:
                 df_arg.i = DataFormat.AUTO.value
-            elif op.type in MaceTransposableDataFormatOps:
+            elif self.is_transposable_data_format_ops(op):
                 input_df = DataFormat.AUTO.value
                 for input_tensor in op.input:
                     if input_tensor in self._consts:
@@ -1440,15 +1497,15 @@ class Transformer(base_converter.ConverterInterface):
                                 arg.i = 1
                             elif arg.i == 3:
                                 arg.i = 2
-
-                        producer = self._producer[op.input[0]]
-                        input_shape = producer.output_shape[0].dims
-                        if producer.type == MaceOp.FullyConnected.name and \
-                                len(input_shape) == 2:
-                            axis_arg = ConverterUtil.get_arg(
-                                op, MaceKeyword.mace_axis_str)
-                            if axis_arg.i == 1:
-                                axis_arg.i = 3
+                        if op.input[0] in self._producer:
+                            producer = self._producer[op.input[0]]
+                            input_shape = producer.output_shape[0].dims
+                            if (producer.type == MaceOp.FullyConnected.name
+                                    and len(input_shape) == 2):
+                                axis_arg = ConverterUtil.get_arg(
+                                        op, MaceKeyword.mace_axis_str)
+                                if axis_arg.i == 1:
+                                    axis_arg.i = 3
 
             elif op.type == MaceOp.Squeeze.name:
                 for arg in op.arg:
@@ -1721,20 +1778,14 @@ class Transformer(base_converter.ConverterInterface):
         quantize_info.zero_point = info.zero_point
 
     def transform_fake_quantize(self):
-        if not self._option.quantize:
-            return False
-
         # Quantize info from fixpoint fine tune
         print("Transform fake quantize")
-        range_file = self._option.quantize_range_file
-        if range_file:
-            return
 
         net = self._model
         for op in net.op:
             if op.type == 'FakeQuantWithMinMaxVars' or \
                    op.type == 'FakeQuantWithMinMaxArgs':
-                if op.input[0] not in self._consts:
+                if self._option.quantize and op.input[0] not in self._consts:
                     producer_op = self._producer[op.input[0]]
                     minval = ConverterUtil.get_arg(op, 'min').f
                     maxval = ConverterUtil.get_arg(op, 'max').f
@@ -1805,6 +1856,7 @@ class Transformer(base_converter.ConverterInterface):
         range_file = self._option.quantize_range_file
         if range_file:
             print("Add quantize tensor range")
+            post_quantize_info = {}
             with open(range_file) as f:
                 for line in f:
                     tensor_name, minmax = line.split("@@")[:2]
@@ -1819,17 +1871,21 @@ class Transformer(base_converter.ConverterInterface):
                     activation_info.maxval = max_val
                     activation_info.scale = scale
                     activation_info.zero_point = zero
-                    self._quantize_activation_info[tensor_name] = activation_info  # noqa
+                    if tensor_name not in self._quantize_activation_info:
+                        post_quantize_info[tensor_name] = activation_info
 
             for op in self._model.op:
                 if op.name.find(MaceKeyword.mace_output_node_name) >= 0:
                     continue
                 for output in op.output:
-                    mace_check(output in self._quantize_activation_info,
-                               "%s does not have quantize activation info"
-                               % op)
-                    op.quantize_info.extend([
-                        self._quantize_activation_info[output]])
+                    # Prefer quantize info from quantization-aware training
+                    if output not in self._quantize_activation_info:
+                        mace_check(output in post_quantize_info,
+                                   "%s does not have quantize activation info"
+                                   % op)
+                        op.quantize_info.extend([post_quantize_info[output]])
+                        self._quantize_activation_info[output] = \
+                            post_quantize_info[output]
 
         if not self._option.quantize:
             return False
@@ -1857,11 +1913,14 @@ class Transformer(base_converter.ConverterInterface):
 
         print("Add default quantize info for ops like Pooling, Softmax")
         for op in self._model.op:
-            if op.type in [MaceOp.Pooling.name,
+            if op.type in [MaceOp.ExpandDims.name,
+                           MaceOp.Pad.name,
+                           MaceOp.Pooling.name,
                            MaceOp.Reduce.name,
-                           MaceOp.Squeeze.name,
                            MaceOp.Reshape.name,
                            MaceOp.ResizeBilinear.name,
+                           MaceOp.Squeeze.name,
+                           MaceOp.StridedSlice.name,
                            MaceOp.BatchToSpaceND.name,
                            MaceOp.SpaceToBatchND.name,
                            MaceOp.SpaceToDepth.name,
@@ -1900,6 +1959,18 @@ class Transformer(base_converter.ConverterInterface):
                         self.copy_quantize_info(producer_op, quantize_info)
                         self._quantize_activation_info[producer_op.output[0]] \
                             = producer_op.quantize_info[0]
+            elif op.type == MaceOp.Activation.name:
+                act_type = ConverterUtil.get_arg(
+                    op, MaceKeyword.mace_activation_type_str).s.decode()
+                if act_type not in [ActivationType.TANH.name,
+                                    ActivationType.SIGMOID.name]:
+                    continue
+                del op.quantize_info[:]
+                if act_type == ActivationType.TANH.name:
+                    quantize_info = self.add_quantize_info(op, -1.0, 1.0)
+                else:
+                    quantize_info = self.add_quantize_info(op, 0.0, 1.0)
+                self._quantize_activation_info[op.output[0]] = quantize_info
             elif op.type == MaceOp.Softmax.name:
                 del op.quantize_info[:]
                 quantize_info = \
@@ -1927,6 +1998,7 @@ class Transformer(base_converter.ConverterInterface):
                     maxval = producer_op0.quantize_info[0].maxval \
                         - producer_op1.quantize_info[0].minval
                 else:
+                    print(op)
                     mace_check(False, "Quantized Elementwise only support:"
                                       " SUM and SUB without ranges now.")
                 quantize_info = \
@@ -2093,13 +2165,25 @@ class Transformer(base_converter.ConverterInterface):
                     mace_check(False, "Only support reshape and flatten")
                 shape_tensor.int32_data.extend(dims)
                 op.input.append(shape_tensor.name)
-            if len(op.input) == 2 and dim_arg is None:
-                if shape_tensor is None and op.input[1] in self._consts:
-                    shape_tensor = self._consts[op.input[1]]
-                if shape_tensor is not None:
-                    dim_arg = op.arg.add()
-                    dim_arg.name = MaceKeyword.mace_dim_str
-                    dim_arg.ints.extend(shape_tensor.int32_data)
+
+    def transform_shape_tensor_to_param(self):
+        kOpTypeInputIdxMap = {
+            MaceOp.ResizeNearestNeighbor.name: 1,
+            MaceOp.Deconv2D.name: 2,
+            MaceOp.Reshape.name: 1,
+        }
+        net = self._model
+        for op in net.op:
+            if op.type not in kOpTypeInputIdxMap:
+                continue
+            shape_idx = kOpTypeInputIdxMap[op.type]
+            dim_arg = ConverterUtil.get_arg(op, MaceKeyword.mace_dim_str)
+            if len(op.input) > shape_idx and dim_arg is None and \
+                    op.input[shape_idx] in self._consts:
+                shape_tensor = self._consts[op.input[shape_idx]]
+                dim_arg = op.arg.add()
+                dim_arg.name = MaceKeyword.mace_dim_str
+                dim_arg.ints.extend(shape_tensor.int32_data)
 
     def fold_fc_reshape(self):
         net = self._model

@@ -14,7 +14,8 @@
 
 #include <memory>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #ifdef MACE_ENABLE_OPENCL
 #include "mace/ops/opencl/image/channel_shuffle.h"
 #endif  // MACE_ENABLE_OPENCL
@@ -63,7 +64,7 @@ class ChannelShuffleOp<DeviceType::CPU, T> : public Operation {
         const T *in_ptr = input_ptr + b * batch_size
             + (g * channels_per_group + idx) * image_size;
         T *out_ptr = output_ptr + b * batch_size + c * image_size;
-        memcpy(out_ptr, in_ptr, image_size * sizeof(float));
+        memcpy(out_ptr, in_ptr, image_size * sizeof(T));
       }
     }
 
@@ -98,9 +99,11 @@ class ChannelShuffleOp<DeviceType::GPU, float> : public Operation {
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterChannelShuffle(OpRegistryBase *op_registry) {
+void RegisterChannelShuffle(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "ChannelShuffle",
                    ChannelShuffleOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "ChannelShuffle",
+                        ChannelShuffleOp, DeviceType::CPU);
 
   MACE_REGISTER_GPU_OP(op_registry, "ChannelShuffle", ChannelShuffleOp);
 

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "mace/core/runtime/hexagon/hexagon_hta_wrapper.h"
-
+#include <sys/types.h>
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -24,15 +24,59 @@
 #include <utility>
 
 #include "mace/core/runtime/hexagon/hexagon_hta_ops.h"
+#include "mace/core/runtime/hexagon/hexagon_hta_transformer.h"
 #include "mace/core/types.h"
 #include "mace/utils/memory.h"
-#include "mace/core/quantize.h"
 #include "third_party/hta/hta_hexagon_api.h"
-
 namespace mace {
 
+namespace {
+int GetHTAEnv(const std::string &name, int default_value) {
+  int value = default_value;
+  std::string env_str;
+  MaceStatus status = GetEnv(name.c_str(), &env_str);
+  if (status == MaceStatus::MACE_SUCCESS && !env_str.empty()) {
+    value = std::atoi(env_str.c_str());
+  }
+  return value;
+}
+
+// Print the API logs to standard output.
+void HtaApiLog(hexagon_hta_nn_nn_id id,
+               const char *api_op,
+               const char *const format,
+                 ...) {
+  va_list arg;
+  va_start(arg, format);
+  if (api_op != NULL) {
+    printf("Graph ID: %d\t", id);
+  }
+  vfprintf(stdout, format, arg);
+  va_end(arg);
+}
+// Print the performance stats to standard output.
+void HtaPerformanceLog(int log_level,
+                       uint32_t network_handle,
+                       uint32_t thread_id,
+                       const char *const format,
+                       ...) {
+  va_list arg;
+  va_start(arg, format);
+  printf("Log Level: %d, Network Handle: %d, Thread ID: %d - ", log_level,
+         network_handle, thread_id);
+  vfprintf(stdout, format, arg);
+  va_end(arg);
+}
+}  // namespace
+
 HexagonHTAWrapper::HexagonHTAWrapper(Device *device)
-    : quantize_util_(&device->cpu_runtime()->thread_pool()) {
+    : allocator_(device->allocator()),
+#ifdef MACE_ENABLE_OPENCL
+      transformer_(make_unique<HexagonHTATranformer<GPU>>()) {
+#else
+      transformer_(make_unique<HexagonHTATranformer<CPU>>()) {
+#endif
+  transformer_->Init(device);
 }
 
 int HexagonHTAWrapper::GetVersion() {
@@ -51,6 +95,40 @@ bool HexagonHTAWrapper::Init() {
   LOG(INFO) << "Hexagon init";
   MACE_CHECK(hexagon_hta_nn_init(&nn_id_) == 0, "hexagon_nn_init failed");
   ResetPerfInfo();
+
+  int ret;
+  int power_level = GetHTAEnv("MACE_HTA_POWER_LEVEL", -1);
+  if (power_level != -1) {
+    ret = hexagon_hta_nn_set_config_params(nn_id_, HTA_NN_CONFIG_POWER_LEVEL,
+                                           &power_level, sizeof(power_level));
+    LOG(INFO) << "HTA_NN_CONFIG_POWER_LEVEL: " << power_level
+              << " returns: " << ret;
+  }
+
+  int is_compress = GetHTAEnv("MACE_HTA_BANDWIDTH_COMPRESSION", 1);
+  if (is_compress) {
+    ret = hexagon_hta_nn_set_config_params(nn_id_,
+                                           HTA_NN_CONFIG_BANDWIDTH_COMPRESSION,
+                                           &is_compress, sizeof(is_compress));
+    LOG(INFO) << "HTA_NN_CONFIG_BANDWIDTH_COMPRESSION: " << is_compress
+              << " returns: " << ret;
+  }
+
+  if (VLOG_IS_ON(2)) {
+    ret = hexagon_hta_nn_set_config_params(
+        nn_id_, HTA_NN_CONFIG_PERFORMANCE_LOG,
+        reinterpret_cast<void *>(&HtaPerformanceLog),
+        sizeof(&HtaPerformanceLog));
+    MACE_CHECK(ret == 0, "HTA_NN_CONFIG_PERFORMANCE_LOG returns: " , ret);
+  }
+
+  if (VLOG_IS_ON(3)) {
+    ret = hexagon_hta_nn_set_config_params(nn_id_, HTA_NN_CONFIG_API_LOG,
+                                           reinterpret_cast<void *>(&HtaApiLog),
+                                           sizeof(&HtaApiLog));
+    MACE_CHECK(ret == 0, "HTA_NN_CONFIG_API_LOG returns: ", ret);
+  }
+
   return true;
 }
 
@@ -73,32 +151,24 @@ bool HexagonHTAWrapper::SetupGraph(const NetDef &net_def,
       tensor_shape.insert(tensor_shape.begin(), 1);
     }
 
-    hexagon_nn_const_node const_node;
-    const_node.node_id = node_id(const_tensor.node_id());
-    const_node.tensor.batches = tensor_shape[0];
-    const_node.tensor.height = tensor_shape[1];
-    const_node.tensor.width = tensor_shape[2];
-    const_node.tensor.depth = tensor_shape[3];
-
-    if (const_tensor.data_type() == DataType::DT_INT32 &&
-        const_tensor.data_size() == 0) {
-      const_node.tensor.data = NULL;
-      const_node.tensor.dataLen = 0;
-    } else {
-      const_node.tensor.data =
+    unsigned char *const_node_data = nullptr;
+    int const_node_data_len = 0;
+    if (!(const_tensor.data_type() == DataType::DT_INT32 &&
+        const_tensor.data_size() == 0)) {
+      const_node_data =
           const_cast<unsigned char *>(model_data + const_tensor.offset());
-      const_node.tensor.dataLen = const_tensor.data_size() *
+      const_node_data_len = const_tensor.data_size() *
           GetEnumTypeSize(const_tensor.data_type());
     }
 
     hexagon_hta_nn_append_const_node(nn_id_,
-                                     const_node.node_id,
-                                     const_node.tensor.batches,
-                                     const_node.tensor.height,
-                                     const_node.tensor.width,
-                                     const_node.tensor.depth,
-                                     const_node.tensor.data,
-                                     const_node.tensor.dataLen);
+                                     node_id(const_tensor.node_id()),
+                                     tensor_shape[0],
+                                     tensor_shape[1],
+                                     tensor_shape[2],
+                                     tensor_shape[3],
+                                     const_node_data,
+                                     const_node_data_len);
   }
 
   // op node
@@ -137,61 +207,14 @@ bool HexagonHTAWrapper::SetupGraph(const NetDef &net_def,
 
     auto padding_type = static_cast<hta_padding_type>(op.padding());
 
-    hexagon_nn_op_node op_node;
-    op_node.node_id = node_id(op.node_id());
-    op_node.operation = op_id;
-    op_node.padding = padding_type;
-    op_node.inputs = cached_inputs.back().data();
-    op_node.inputsLen = inputs.size();
-    op_node.outputs = cached_outputs.back().data();
-    op_node.outputsLen = outputs.size();
-
     hexagon_hta_nn_append_node(nn_id_,
-                               op_node.node_id,
-                               op_node.operation,
-                               op_node.padding,
-                               op_node.inputs,
-                               op_node.inputsLen,
-                               op_node.outputs,
-                               op_node.outputsLen);
-  }
-
-  // input info
-  num_inputs_ = net_def.input_info_size();
-  input_info_.reserve(num_inputs_);
-  for (const InputOutputInfo &input_info : net_def.input_info()) {
-    std::vector<index_t> input_shape(input_info.dims().begin(),
-                                     input_info.dims().end());
-    while (input_shape.size() < 4) {
-      input_shape.insert(input_shape.begin(), 1);
-    }
-    input_info_.emplace_back(input_info.name(),
-                             input_shape,
-                             input_info.data_type(),
-                             input_info.scale(),
-                             input_info.zero_point(),
-                             make_unique<Tensor>());
-  }
-
-  // output info
-  num_outputs_ = net_def.output_info_size();
-  output_info_.reserve(num_outputs_);
-  for (const InputOutputInfo &output_info : net_def.output_info()) {
-    std::vector<index_t> output_shape(output_info.dims().begin(),
-                                      output_info.dims().end());
-    while (output_shape.size() < 4) {
-      output_shape.insert(output_shape.begin(), 1);
-    }
-    output_info_.emplace_back(output_info.name(),
-                              output_shape,
-                              output_info.data_type(),
-                              output_info.scale(),
-                              output_info.zero_point(),
-                              make_unique<Tensor>());
-    VLOG(1) << "OutputInfo: "
-            << "\n\t shape: " << output_shape[0] << " " << output_shape[1]
-            << " " << output_shape[2] << " " << output_shape[3]
-            << "\n\t type: " << output_info.data_type();
+                               node_id(op.node_id()),
+                               op_id,
+                               padding_type,
+                               cached_inputs.back().data(),
+                               inputs.size(),
+                               cached_outputs.back().data(),
+                               outputs.size());
   }
 
   int64_t t1 = NowMicros();
@@ -201,6 +224,99 @@ bool HexagonHTAWrapper::SetupGraph(const NetDef &net_def,
   int64_t t2 = NowMicros();
 
   VLOG(1) << "Setup time: " << t1 - t0 << " " << t2 - t1;
+
+  // input info
+  num_inputs_ = net_def.input_info_size();
+  input_info_.reserve(num_inputs_);
+  input_tensordef_.resize(num_inputs_);
+  for (int index = 0; index < num_inputs_; ++index) {
+    auto input_info = net_def.input_info(index);
+    std::vector<index_t> input_shape(input_info.dims().begin(),
+                                     input_info.dims().end());
+    while (input_shape.size() < 4) {
+      input_shape.insert(input_shape.begin(), 1);
+    }
+
+    auto quantized_tensor = make_unique<Tensor>(allocator_, DT_UINT8);
+    auto hta_tensor = make_unique<Tensor>(allocator_, DT_UINT8);
+    hexagon_hta_nn_hw_tensordef &input_tensordef = input_tensordef_[index];
+    memset(&input_tensordef, 0, sizeof(input_tensordef));
+    MACE_CHECK(hexagon_hta_nn_get_memory_layout(nn_id_, 0, index,
+                                                &input_tensordef) == 0);
+    input_tensordef.dataLen = input_tensordef.batchStride;
+    VLOG(1) << input_tensordef.format << " " << input_tensordef.elementSize
+            << " " << input_tensordef.numDims << " "
+            << input_tensordef.batchStride;
+    for (uint32_t i = 0; i < input_tensordef.numDims; ++i) {
+      VLOG(1) << input_tensordef.dim[i].length << " "
+              << input_tensordef.dim[i].lpadding << " "
+              << input_tensordef.dim[i].valid;
+    }
+    hta_tensor->Resize({input_tensordef.dataLen});
+    MACE_CHECK(hta_tensor->raw_size() == input_tensordef.dataLen);
+    Tensor::MappingGuard input_guard(hta_tensor.get());
+    input_tensordef.fd =
+        allocator_->rpcmem()->ToFd(hta_tensor->mutable_data<void>());
+    MACE_CHECK(hexagon_hta_nn_register_tensor(nn_id_, &input_tensordef) == 0);
+
+    transformer_->SetInputTransformer(input_tensordef.format);
+
+    input_info_.emplace_back(
+        input_info.name(), input_shape, input_info.data_type(),
+        input_info.scale(), input_info.zero_point(),
+        std::move(quantized_tensor),
+        std::move(hta_tensor));
+  }
+
+  // output info
+  num_outputs_ = net_def.output_info_size();
+  output_info_.reserve(num_outputs_);
+  output_tensordef_.resize(num_outputs_);
+  for (int index = 0; index < num_outputs_; ++index) {
+    auto output_info = net_def.output_info(index);
+    std::vector<index_t> output_shape(output_info.dims().begin(),
+                                      output_info.dims().end());
+    while (output_shape.size() < 4) {
+      output_shape.insert(output_shape.begin(), 1);
+    }
+
+    auto quantized_tensor = make_unique<Tensor>(allocator_, DT_UINT8);
+    auto hta_tensor = make_unique<Tensor>(allocator_, DT_UINT8);
+    quantized_tensor->SetScale(output_info.scale());
+    quantized_tensor->SetZeroPoint(output_info.zero_point());
+
+    hexagon_hta_nn_hw_tensordef &output_tensordef = output_tensordef_[index];
+    memset(&output_tensordef, 0, sizeof(output_tensordef));
+    MACE_CHECK(hexagon_hta_nn_get_memory_layout(nn_id_, 1, index,
+                                                &output_tensordef) == 0);
+    output_tensordef.dataLen = output_tensordef.batchStride;
+    VLOG(1) << output_tensordef.format << " " << output_tensordef.elementSize
+            << " " << output_tensordef.numDims << " "
+            << output_tensordef.batchStride;
+    for (uint32_t i = 0; i < output_tensordef.numDims; ++i) {
+      VLOG(1) << output_tensordef.dim[i].length << " "
+              << output_tensordef.dim[i].lpadding << " "
+              << output_tensordef.dim[i].valid;
+    }
+    hta_tensor->Resize({output_tensordef.batchStride});
+    MACE_CHECK(hta_tensor->raw_size() == output_tensordef.dataLen);
+    Tensor::MappingGuard output_guard(hta_tensor.get());
+    output_tensordef.fd =
+        allocator_->rpcmem()->ToFd(hta_tensor->mutable_data<void>());
+    MACE_CHECK(hexagon_hta_nn_register_tensor(nn_id_, &output_tensordef) == 0);
+
+    transformer_->SetOutputTransformer(output_tensordef.format);
+
+    output_info_.emplace_back(
+        output_info.name(), output_shape, output_info.data_type(),
+        output_info.scale(), output_info.zero_point(),
+        std::move(quantized_tensor), std::move(hta_tensor));
+
+    VLOG(1) << "OutputInfo: "
+            << "\n\t shape: " << output_shape[0] << " " << output_shape[1]
+            << " " << output_shape[2] << " " << output_shape[3]
+            << "\n\t type: " << output_info.data_type();
+  }
 
   return true;
 }
@@ -244,89 +360,47 @@ bool HexagonHTAWrapper::ExecuteGraphNew(
     const std::map<std::string, Tensor *> &input_tensors,
     std::map<std::string, Tensor *> *output_tensors) {
   VLOG(2) << "Execute graph new: " << nn_id_;
-  uint32_t num_inputs = static_cast<uint32_t>(input_tensors.size());
-  uint32_t num_outputs = static_cast<uint32_t>(output_tensors->size());
+  auto num_inputs = static_cast<uint32_t>(input_tensors.size());
+  auto num_outputs = static_cast<uint32_t>(output_tensors->size());
   MACE_CHECK(num_inputs_ == static_cast<int>(num_inputs), "Wrong inputs num");
   MACE_CHECK(num_outputs_ == static_cast<int>(num_outputs),
              "Wrong outputs num");
 
-  std::vector<hexagon_hta_nn_tensordef> inputs(num_inputs);
-  std::vector<hexagon_hta_nn_tensordef> outputs(num_outputs);
-
   for (size_t i = 0; i < num_inputs; ++i) {
     const auto input_tensor = input_tensors.at(input_info_[i].name);
-    const auto &input_shape = input_tensor->shape();
-    inputs[i].batches = static_cast<uint32_t>(input_shape[0]);
-    inputs[i].height = static_cast<uint32_t>(input_shape[1]);
-    inputs[i].width = static_cast<uint32_t>(input_shape[2]);
-    inputs[i].depth = static_cast<uint32_t>(input_shape[3]);
-    input_info_[i].tensor_u8->SetDtype(DT_UINT8);
-    input_info_[i].tensor_u8->Resize(input_shape);
+    input_tensor->SetScale(input_info_[i].scale);
+    input_tensor->SetZeroPoint(input_info_[i].zero_point);
+    MACE_CHECK_SUCCESS(
+        transformer_->Quantize(input_tensors.at(input_info_[i].name),
+                               input_info_[i].quantized_tensor.get()));
 
-    const float *input_data = input_tensor->data<float>();
-    uint8_t *input_data_u8 = input_info_[i].tensor_u8->mutable_data<uint8_t>();
-    quantize_util_.QuantizeWithScaleAndZeropoint(input_data,
-                                                 input_tensor->size(),
-                                                 input_info_[i].scale,
-                                                 input_info_[i].zero_point,
-                                                 input_data_u8);
+    MACE_CHECK_SUCCESS(transformer_->TransformInput(
+        input_info_[i].quantized_tensor.get(),
+        input_info_[i].hta_tensor.get(), i));
 
-    inputs[i].data = const_cast<unsigned char *>(
-        reinterpret_cast<const unsigned char *>(
-            input_info_[i].tensor_u8->raw_data()));
-    inputs[i].dataLen = static_cast<int>(input_info_[i].tensor_u8->raw_size());
-    inputs[i].data_valid_len = static_cast<uint32_t>(
-        input_info_[i].tensor_u8->raw_size());
-    inputs[i].unused = 0;
+    Tensor::MappingGuard input_guard(input_info_[i].hta_tensor.get());
   }
 
-  for (size_t i = 0; i < num_outputs; ++i) {
-    auto output_tensor = output_tensors->at(output_info_[i].name);
-    output_tensor->SetDtype(output_info_[i].data_type);
-    output_tensor->Resize(output_info_[i].shape);
-    output_info_[i].tensor_u8->SetDtype(DT_UINT8);
-    output_info_[i].tensor_u8->Resize(output_info_[i].shape);
-    outputs[i].data = reinterpret_cast<unsigned char *>(
-        output_info_[i].tensor_u8->raw_mutable_data());
-    outputs[i].dataLen =
-        static_cast<int>(output_info_[i].tensor_u8->raw_size());
-  }
-
-  int res = hexagon_hta_nn_execute_new(nn_id_,
-                                       inputs.data(),
-                                       num_inputs,
-                                       outputs.data(),
-                                       num_outputs);
+  MACE_CHECK(hexagon_hta_nn_execute_hw(nn_id_,
+                                       input_tensordef_.data(), num_inputs,
+                                       output_tensordef_.data(), num_outputs,
+                                       nullptr, nullptr) == 0);
 
   for (size_t i = 0; i < num_outputs; ++i) {
-    std::vector<uint32_t> output_shape{
-        outputs[i].batches, outputs[i].height, outputs[i].width,
-        outputs[i].depth};
-    MACE_CHECK(output_shape.size() == output_info_[i].shape.size(),
-               output_shape.size(), " vs ", output_info_[i].shape.size(),
-               "wrong output shape inferred");
-    for (size_t j = 0; j < output_shape.size(); ++j) {
-      MACE_CHECK(static_cast<index_t>(output_shape[j])
-                     == output_info_[i].shape[j],
-                 output_shape[j], " vs ", output_info_[i].shape[j],
-                 "wrong output shape inferred");
+    { // To sync cache
+      Tensor::MappingGuard output_guard(output_info_[i].hta_tensor.get());
     }
-    auto output_tensor = output_tensors->at(output_info_[i].name);
-    MACE_CHECK(static_cast<index_t>(outputs[i].data_valid_len)
-                   == output_tensor->size(),
-               outputs[i].data_valid_len, " vs ", output_tensor->size(),
-               " wrong output size inferred.");
+    output_info_[i].quantized_tensor->Resize(output_info_[i].shape);
+    transformer_->TransformOutput(output_info_[i].hta_tensor.get(),
+                                  output_info_[i].quantized_tensor.get(), i);
 
-    const uint8_t *output_data_u8 = output_info_[i].tensor_u8->data<uint8_t>();
-    float *output_data = output_tensor->mutable_data<float>();
-    quantize_util_.Dequantize(output_data_u8,
-                              output_info_[i].tensor_u8->size(),
-                              output_info_[i].scale,
-                              output_info_[i].zero_point,
-                              output_data);
+
+    auto output_tensor = output_tensors->at(output_info_[i].name);
+    MaceStatus st = transformer_->Dequantize(
+        output_info_[i].quantized_tensor.get(), output_tensor);
   }
 
-  return res == 0;
+  return true;
 }
 
 }  // namespace mace

@@ -56,14 +56,34 @@ cmake_build_android-arm64-v8:
 bazel_build:
   stage: build
   script:
-    - sh tools/bazel-build-standalone-lib.sh
-  only:
-    - triggers
-
-cmake_build:
-  stage: build
-  script:
-    - sh tools/cmake-build-standalone-lib.sh
+    - bash tools/bazel_build_standalone_lib.sh
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu,dsp
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu,apu
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu,dsp
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu,apu
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm_linux_gnueabihf --runtimes=cpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm_linux_gnueabihf --runtimes=cpu,gpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=aarch64_linux_gnu --runtimes=cpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=aarch64_linux_gnu --runtimes=cpu,gpu
+    - bash tools/bazel_build_standalone_lib.sh --abi=host
+    - bash tools/bazel_build_standalone_lib.sh --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu,dsp --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=armeabi-v7a --runtimes=cpu,gpu,apu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu,dsp --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm64-v8a --runtimes=cpu,gpu,apu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm_linux_gnueabihf --runtimes=cpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=arm_linux_gnueabihf --runtimes=cpu,gpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=aarch64_linux_gnu --runtimes=cpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=aarch64_linux_gnu --runtimes=cpu,gpu --static
+    - bash tools/bazel_build_standalone_lib.sh --abi=host --static
   only:
     - triggers
 
@@ -87,12 +107,14 @@ mace_cc_test:
         DEVICE_CONF_FILE=generic-mobile-devices/devices.yml
       fi
     - python tools/bazel_adb_run.py --target="//test/ccunit:mace_cc_test" --device_yml=${DEVICE_CONF_FILE} --run_target=True --stdout_processor=unittest_stdout_processor --target_abis=armeabi-v7a,arm64-v8a,arm64 --target_socs=$TARGET_SOCS
+    - python tools/bazel_adb_run.py --target="//micro/test/ccunit:micro_ops_test" --run_target=True --stdout_processor=ops_benchmark_stdout_processor --target_abis=arm64-v8a
 
 mace_cc_benchmark:
   stage: test
   script:
     - if [ -z "$TARGET_SOCS" ]; then TARGET_SOCS=random; fi
     - python tools/bazel_adb_run.py --target="//test/ccbenchmark:mace_cc_benchmark" --run_target=True --stdout_processor=ops_benchmark_stdout_processor --target_abis=armeabi-v7a,arm64-v8a --target_socs=$TARGET_SOCS --args="--filter=.*SIGMOID.*"
+    - python tools/bazel_adb_run.py --target="//micro/test/ccbenchmark:micro_cc_benchmark" --run_target=True --stdout_processor=ops_benchmark_stdout_processor --target_abis=arm64-v8a
   only:
     - triggers
 
@@ -119,6 +141,13 @@ model_tests:
     - python tools/converter.py convert --config=${CONF_FILE} --target_socs=$TARGET_SOCS --model_graph_format=code --model_data_format=file
     - python tools/converter.py run --config=${CONF_FILE} --target_socs=$TARGET_SOCS --round=1 --validate --model_graph_format=code --model_data_format=file
     - python tools/converter.py run --config=${CONF_FILE} --target_socs=$TARGET_SOCS --round=5 --model_graph_format=code --model_data_format=file --benchmark
+    - CONF_FILE=mace-models/micro-models/har-cnn/har-cnn.yml
+    - python tools/converter.py convert --config=${CONF_FILE} --enable_micro
+    - python tools/python/run_micro.py --config $CONF_FILE --build --validate --model_name har_cnn
+    - python tools/python/run_micro.py --config $CONF_FILE --model_name har_cnn --build --benchmark
+    - CONF_FILE=mace-models/micro-models/har-cnn/har-cnn-bf16.yml
+    - python tools/converter.py convert --config=${CONF_FILE} --enable_micro
+    - python tools/python/run_micro.py --config $CONF_FILE --build --validate --model_name har_cnn
     - rm -rf mace-models
 
 quantization_tests:
@@ -139,6 +168,13 @@ quantization_tests:
       python tools/converter.py convert --config=${CONF_FILE} --target_socs=$TARGET_SOCS --model_graph_format=file --model_data_format=file || exit 1;
       python tools/converter.py run --config=${CONF_FILE} --target_socs=$TARGET_SOCS --device_yml=${DEVICE_CONF_FILE} --round=1 --validate --model_graph_format=file --model_data_format=file || exit 1;
       done
+    - >
+      CONF_FILE=mace-models/mobilenet-v1/mobilenet-v1-quantize-retrain-hta.yml;
+      GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" git clone --single-branch --branch hta git@v9.git.n.xiaomi.com:deep-computing/mace.git mace_hta --depth 1;
+      mv mace_hta/third_party/hta/ third_party/;
+      python tools/converter.py convert --config=${CONF_FILE} --model_graph_format=file --model_data_format=file || exit 1;
+      python tools/converter.py run --config=${CONF_FILE} --round=1 --validate --model_graph_format=file --model_data_format=file || exit 1;
+      rm -rf mace_hta third_party/hta;
     - rm -rf mace-models
 
 dynamic_linking_test:

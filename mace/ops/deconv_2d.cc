@@ -14,20 +14,6 @@
 
 #include "mace/ops/deconv_2d.h"
 
-#if defined(MACE_ENABLE_NEON)
-#include <arm_neon.h>
-#include "mace/ops/arm/fp32/deconv_2d_2x2.h"
-#include "mace/ops/arm/fp32/deconv_2d_3x3.h"
-#include "mace/ops/arm/fp32/deconv_2d_4x4.h"
-#include "mace/ops/arm/fp32/deconv_2d_general.h"
-#include "mace/ops/arm/fp32/bias_add.h"
-#include "mace/ops/arm/fp32/activation.h"
-#else
-#include "mace/ops/ref/bias_add.h"
-#include "mace/ops/ref/activation.h"
-#include "mace/ops/ref/deconv_2d.h"
-#endif
-
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -35,9 +21,13 @@
 #include <vector>
 
 #include "mace/core/future.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/core/tensor.h"
 #include "mace/ops/activation.h"
 #include "mace/ops/common/conv_pool_2d_util.h"
+#include "mace/ops/delegator/activation.h"
+#include "mace/ops/delegator/bias_add.h"
+#include "mace/ops/delegator/deconv_2d.h"
 #include "mace/utils/memory.h"
 #include "mace/utils/math.h"
 
@@ -49,17 +39,29 @@
 namespace mace {
 namespace ops {
 
+namespace {
+const std::vector<int> kDeconv2dStrides = {1, 1};
+}
+
 template<DeviceType D, class T>
 class Deconv2dOp;
 
-template<>
-class Deconv2dOp<DeviceType::CPU, float> : public Deconv2dOpBase {
+template<class T>
+class Deconv2dOp<DeviceType::CPU, T> : public Deconv2dOpBase {
  public:
   explicit Deconv2dOp(OpConstructContext *context)
       : Deconv2dOpBase(context),
-        activation_delegator_(activation_,
-                              relux_max_limit_,
-                              leakyrelu_coefficient_) {}
+        activation_delegator_(
+            delegator::Activation::Create(
+                context->workspace(),
+                MACE_DELEGATOR_KEY(Activation, DeviceType::CPU,
+                                   T, kCpuImplType),
+                delegator::ActivationParam(activation_, relux_max_limit_,
+                                           leakyrelu_coefficient_))),
+        bias_add_delegator_(delegator::BiasAdd::Create(
+            context->workspace(),
+            MACE_DELEGATOR_KEY(BiasAdd, DeviceType::CPU, T, kCpuImplType),
+            DelegatorParam())) {}
 
   MaceStatus Run(OpContext *context) override {
     const Tensor *input = this->Input(0);
@@ -79,99 +81,73 @@ class Deconv2dOp<DeviceType::CPU, float> : public Deconv2dOpBase {
     MACE_CHECK_NOTNULL(filter);
     MACE_CHECK_NOTNULL(output);
 
-#ifdef MACE_ENABLE_NEON
-    const index_t kernel_h = filter->dim(2);
-    const index_t kernel_w = filter->dim(3);
-
-    bool use_neon_2x2_s1 = kernel_h == kernel_w && kernel_h == 2 &&
-        strides_[0] == strides_[1] && strides_[0] == 1;
-    bool use_neon_2x2_s2 = kernel_h == kernel_w && kernel_h == 2 &&
-        strides_[0] == strides_[1] && strides_[0] == 2;
-
-    bool use_neon_3x3_s1 = kernel_h == kernel_w && kernel_h == 3 &&
-        strides_[0] == strides_[1] && strides_[0] == 1;
-    bool use_neon_3x3_s2 = kernel_h == kernel_w && kernel_h == 3 &&
-        strides_[0] == strides_[1] && strides_[0] == 2;
-
-    bool use_neon_4x4_s1 = kernel_h == kernel_w && kernel_h == 4 &&
-        strides_[0] == strides_[1] && strides_[0] == 1;
-    bool use_neon_4x4_s2 = kernel_h == kernel_w && kernel_h == 4 &&
-        strides_[0] == strides_[1] && strides_[0] == 2;
-
     if (deconv2d_delegator_ == nullptr) {
-      if (use_neon_2x2_s1) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK2x2S1>(
-            paddings_, padding_type_, model_type_);
-      } else if (use_neon_2x2_s2) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK2x2S2>(
-            paddings_, padding_type_, model_type_);
-      } else if (use_neon_3x3_s1) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK3x3S1>(
-            paddings_, padding_type_, model_type_);
-      } else if (use_neon_3x3_s2) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK3x3S2>(
-            paddings_, padding_type_, model_type_);
-      } else if (use_neon_4x4_s1) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK4x4S1>(
-            paddings_, padding_type_, model_type_);
-      } else if (use_neon_4x4_s2) {
-        deconv2d_delegator_ = make_unique<arm::fp32::Deconv2dK4x4S2>(
-            paddings_, padding_type_, model_type_);
-      } else {
-        deconv2d_delegator_ =
-            make_unique<arm::fp32::Deconv2dGeneral>(strides_,
-                                                    std::vector<int>{1, 1},
-                                                    paddings_,
-                                                    padding_type_,
-                                                    model_type_);
+      auto tag = MACE_DELEGATOR_KEY(Deconv2d, DeviceType::CPU, T, kCpuImplType);
+      if (kCpuImplType == NEON) {
+        const index_t kernel_h = filter->dim(2);
+        const index_t kernel_w = filter->dim(3);
+
+        bool use_neon_2x2_s1 = kernel_h == kernel_w && kernel_h == 2 &&
+            strides_[0] == strides_[1] && strides_[0] == 1;
+        bool use_neon_2x2_s2 = kernel_h == kernel_w && kernel_h == 2 &&
+            strides_[0] == strides_[1] && strides_[0] == 2;
+
+        bool use_neon_3x3_s1 = kernel_h == kernel_w && kernel_h == 3 &&
+            strides_[0] == strides_[1] && strides_[0] == 1;
+        bool use_neon_3x3_s2 = kernel_h == kernel_w && kernel_h == 3 &&
+            strides_[0] == strides_[1] && strides_[0] == 2;
+
+        bool use_neon_4x4_s1 = kernel_h == kernel_w && kernel_h == 4 &&
+            strides_[0] == strides_[1] && strides_[0] == 1;
+        bool use_neon_4x4_s2 = kernel_h == kernel_w && kernel_h == 4 &&
+            strides_[0] == strides_[1] && strides_[0] == 2;
+
+        if (use_neon_2x2_s1) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K2x2S1);
+        } else if (use_neon_2x2_s2) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K2x2S2);
+        } else if (use_neon_3x3_s1) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K3x3S1);
+        } else if (use_neon_3x3_s2) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K3x3S2);
+        } else if (use_neon_4x4_s1) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K4x4S1);
+        } else if (use_neon_4x4_s2) {
+          tag = MACE_DELEGATOR_KEY_EX(Deconv2d, DeviceType::CPU, T,
+                                      kCpuImplType, K4x4S2);
+        }
       }
+      delegator::Deconv2dParam param(strides_, kDeconv2dStrides, paddings_,
+                                     padding_type_, model_type_);
+      deconv2d_delegator_ = delegator::Deconv2d::Create(context->workspace(),
+                                                        tag, param);
     }
-    deconv2d_delegator_->Compute(context,
-                                 input,
-                                 filter,
-                                 output_shape_tensor,
-                                 output);
-#else
-    if (deconv2d_delegator_ == nullptr) {
-      deconv2d_delegator_ = make_unique<ref::Deconv2d<float>>(strides_,
-                                                              std::vector<int>{
-                                                                  1, 1},
-                                                              paddings_,
-                                                              padding_type_,
-                                                              model_type_);
-    }
-    deconv2d_delegator_->Compute(context,
-                                 input,
-                                 filter,
-                                 output_shape_tensor,
-                                 output);
 
-#endif  // MACE_ENABLE_NEON
-
-    bias_add_delegator_.Compute(context, output, bias, output);
-    activation_delegator_.Compute(context, output, output);
+    deconv2d_delegator_->Compute(context, input, filter,
+                                 output_shape_tensor, output);
+    bias_add_delegator_->Compute(context, output, bias, output);
+    activation_delegator_->Compute(context, output, output);
 
     return MaceStatus::MACE_SUCCESS;
   }
 
  private:
-#ifdef MACE_ENABLE_NEON
-  std::unique_ptr<arm::fp32::Deconv2dBase> deconv2d_delegator_;
-  arm::fp32::BiasAdd bias_add_delegator_;
-  arm::fp32::Activation activation_delegator_;
-#else
-  ref::BiasAdd bias_add_delegator_;
-  ref::Activation activation_delegator_;
-  std::unique_ptr<ref::Deconv2d<float>> deconv2d_delegator_;
-#endif  // MACE_ENABLE_NEON
+  std::unique_ptr<delegator::Activation> activation_delegator_;
+  std::unique_ptr<delegator::BiasAdd> bias_add_delegator_;
+  std::unique_ptr<delegator::Deconv2d> deconv2d_delegator_;
 };
 
 #ifdef MACE_ENABLE_OPENCL
 template<>
 class Deconv2dOp<DeviceType::GPU, float> : public Deconv2dOpBase {
  public:
-  explicit Deconv2dOp(OpConstructContext *context)
-      : Deconv2dOpBase(context) {
+  explicit Deconv2dOp(OpConstructContext *context) : Deconv2dOpBase(context),
+      dim_(Operation::GetRepeatedArgs<index_t>("dim")) {
     MemoryType mem_type = MemoryType::GPU_IMAGE;
     if (context->GetOpMemoryType() == MemoryType::GPU_IMAGE) {
       kernel_ = make_unique<opencl::image::Deconv2dKernel>();
@@ -219,12 +195,16 @@ class Deconv2dOp<DeviceType::GPU, float> : public Deconv2dOpBase {
 
     std::vector<index_t> out_shape;
     if (output_shape_tensor) {
-      Tensor::MappingGuard out_shape_guard(output_shape_tensor);
-      MACE_CHECK(output_shape_tensor->size() == 4,
-                 "output shape should be 4-dims");
-      out_shape =
-          std::vector<index_t>(output_shape_tensor->data<int32_t>(),
-                               output_shape_tensor->data<int32_t>() + 4);
+      if (dim_.size() < 2) {
+        Tensor::MappingGuard out_shape_guard(output_shape_tensor);
+        MACE_CHECK(output_shape_tensor->size() == 4,
+                   "output shape should be 4-dims");
+        out_shape =
+            std::vector<index_t>(output_shape_tensor->data<int32_t>(),
+                                 output_shape_tensor->data<int32_t>() + 4);
+      } else {
+        out_shape = dim_;
+      }
     }
     std::vector<int> in_paddings;
     std::vector<int> out_paddings;
@@ -249,13 +229,14 @@ class Deconv2dOp<DeviceType::GPU, float> : public Deconv2dOpBase {
   }
 
  private:
+  std::vector<index_t> dim_;
   std::unique_ptr<OpenCLDeconv2dKernel> kernel_;
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterDeconv2D(OpRegistryBase *op_registry) {
-  MACE_REGISTER_OP(op_registry, "Deconv2D", Deconv2dOp,
-                   DeviceType::CPU, float);
+void RegisterDeconv2D(OpRegistry *op_registry) {
+  MACE_REGISTER_OP(op_registry, "Deconv2D", Deconv2dOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Deconv2D", Deconv2dOp, DeviceType::CPU);
   MACE_REGISTER_GPU_OP(op_registry, "Deconv2D", Deconv2dOp);
 #ifdef MACE_ENABLE_OPENCL
   MACE_REGISTER_OP_CONDITION(

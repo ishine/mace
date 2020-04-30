@@ -19,7 +19,8 @@
 #include <string>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/ops/opencl/image/buffer_to_image.h"
 #include "mace/ops/opencl/image/image_to_buffer.h"
 #include "mace/ops/opencl/buffer/buffer_transform.h"
@@ -66,7 +67,9 @@ class OpenCLBufferTransformer {
                 << " with data type " << dt;
         internal_tensor->Resize(input->shape());
         const uint8_t *input_ptr = input->data<uint8_t>();
-        Tensor::MappingGuard guard(internal_tensor);
+        // No need to finish the opencl command queue to write to the tensor
+        // from CPU, this can accelerate the mapping if using ION buffer.
+        Tensor::MappingGuard guard(internal_tensor, false);
         uint8_t *internal_ptr = internal_tensor->mutable_data<uint8_t>();
         memcpy(internal_ptr, input_ptr, input->raw_size());
         // 2. convert the internal GPU Buffer to output.

@@ -15,7 +15,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -23,8 +24,8 @@ namespace ops {
 template<DeviceType D, class T>
 class LocalResponseNormOp;
 
-template<>
-class LocalResponseNormOp<DeviceType::CPU, float> : public Operation {
+template<class T>
+class LocalResponseNormOp<DeviceType::CPU, T> : public Operation {
  public:
   explicit LocalResponseNormOp(OpConstructContext *context)
       : Operation(context),
@@ -48,8 +49,8 @@ class LocalResponseNormOp<DeviceType::CPU, float> : public Operation {
     const index_t height = input->dim(2);
     const index_t width = input->dim(3);
 
-    const float *input_ptr = input->data<float>();
-    float *output_ptr = output->mutable_data<float>();
+    const T *input_ptr = input->data<T>();
+    T *output_ptr = output->mutable_data<T>();
 
     const index_t image_size = height * width;
     const index_t batch_size = channels * image_size;
@@ -91,9 +92,11 @@ class LocalResponseNormOp<DeviceType::CPU, float> : public Operation {
   float beta_;
 };
 
-void RegisterLocalResponseNorm(OpRegistryBase *op_registry) {
+void RegisterLocalResponseNorm(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "LocalResponseNorm",
                    LocalResponseNormOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "LocalResponseNorm",
+                        LocalResponseNormOp, DeviceType::CPU);
 }
 
 }  // namespace ops

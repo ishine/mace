@@ -15,7 +15,8 @@
 #include <memory>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #ifdef MACE_ENABLE_OPENCL
 #include "mace/ops/opencl/image/sqrdiff_mean.h"
 #endif  // MACE_ENABLE_OPENCL
@@ -66,9 +67,10 @@ class SqrDiffMeanOp : public Operation {
     const index_t img_size = input0->dim(2) * input0->dim(3);
     const index_t bc = input0->dim(0) * input0->dim(1);
 
+    // TODO(luxuhui): cache the output_ptr[i]
     for (int i = 0; i < bc; ++i) {
       for (int j = 0; j < img_size; ++j) {
-        T diff = input_ptr0[i * img_size + j] - input_ptr1[i];
+        float diff = input_ptr0[i * img_size + j] - input_ptr1[i];
         output_ptr[i] += diff * diff;
       }
       output_ptr[i] /= img_size;
@@ -100,9 +102,11 @@ class SqrDiffMeanOp<DeviceType::GPU, float> : public Operation {
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterSqrDiffMean(OpRegistryBase *op_registry) {
+void RegisterSqrDiffMean(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "SqrDiffMean", SqrDiffMeanOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "SqrDiffMean", SqrDiffMeanOp,
+                        DeviceType::CPU);
 
   MACE_REGISTER_GPU_OP(op_registry, "SqrDiffMean", SqrDiffMeanOp);
 }

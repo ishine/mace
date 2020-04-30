@@ -243,7 +243,8 @@ class DeviceWrapper:
                     "--model_file=%s" % mace_model_path,
                 ],
                 stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE)
+                stdout=subprocess.PIPE,
+                universal_newlines=True)
             out, err = p.communicate()
             self.stdout = err + out
             six.print_(self.stdout)
@@ -271,7 +272,7 @@ class DeviceWrapper:
 
             if device_type == common.DeviceType.GPU:
                 if os.path.exists(opencl_binary_file):
-                    self.push(opencl_binary_file, self.data_dir)
+                    self.push(opencl_binary_file, self.interior_dir)
                 if os.path.exists(opencl_parameter_file):
                     self.push(opencl_parameter_file, self.data_dir)
 
@@ -748,7 +749,6 @@ class DeviceWrapper:
                                 ) if YAMLKeyword.dockerfile_path \
                                      in model_config \
                                     else ("third_party/caffe", "lastest")
-
                             sh_commands.validate_model(
                                 abi=target_abi,
                                 device=self,
@@ -954,14 +954,10 @@ class DeviceWrapper:
 class DeviceManager:
     @classmethod
     def list_adb_device(cls):
-        adb_list = sh.adb('devices').stdout.decode('utf-8'). \
-                       strip().split('\n')[1:]
-        adb_list = [tuple(pair.split('\t')) for pair in adb_list]
         devices = []
+        adb_list = sh_commands.adb_devices()
         for adb in adb_list:
-            if adb[1].startswith("no permissions"):
-                continue
-            prop = sh_commands.adb_getprop_by_serialno(adb[0])
+            prop = sh_commands.adb_getprop_by_serialno(adb)
             android = {
                 YAMLKeyword.device_name:
                     prop['ro.product.model'].replace(' ', ''),
@@ -969,7 +965,7 @@ class DeviceManager:
                     prop['ro.product.cpu.abilist'].split(','),
                 YAMLKeyword.target_socs: prop['ro.board.platform'],
                 YAMLKeyword.system: SystemType.android,
-                YAMLKeyword.address: adb[0],
+                YAMLKeyword.address: adb,
                 YAMLKeyword.username: '',
             }
             if android not in devices:
@@ -1007,7 +1003,7 @@ class DeviceManager:
             YAMLKeyword.target_abis: [ABIType.host],
             YAMLKeyword.target_socs: '',
             YAMLKeyword.system: SystemType.host,
-            YAMLKeyword.address: None,
+            YAMLKeyword.address: SystemType.host,
 
         }
         devices_list.append(host)

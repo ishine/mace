@@ -16,12 +16,12 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "mace/core/op_context.h"
+#include "mace/core/ops/op_context.h"
 #include "mace/core/runtime/opencl/gpu_device.h"
 #include "mace/core/runtime/opencl/opencl_runtime.h"
 #include "mace/core/tensor.h"
 #include "mace/core/workspace.h"
-#include "mace/ops/opencl/helper.h"
+#include "mace/core/runtime/opencl/opencl_helper.h"
 #include "mace/utils/memory.h"
 
 namespace mace {
@@ -110,7 +110,7 @@ MaceStatus BufferToImageOpImpl(OpContext *context,
   bool is_out_of_range = false;
   if (runtime->IsOutOfRangeCheckEnabled()) {
     oorc_flag->Map(nullptr);
-    is_out_of_range = *(oorc_flag->mutable_data<char>()) == 1 ? true : false;
+    is_out_of_range = *(oorc_flag->mutable_data<int>()) == 1 ? true : false;
     oorc_flag->UnMap();
   }
   return is_out_of_range ? MaceStatus::MACE_OUT_OF_RESOURCES
@@ -134,7 +134,7 @@ TEST(OutOfRangeCheckTest, RandomTest) {
   std::unique_ptr<Device> device = make_unique<GPUDevice>(
       gpu_context.opencl_tuner());
 
-  Workspace ws;
+  Workspace ws(nullptr);
   OpContext context(&ws, device.get());
 
   std::vector<index_t> buffer_shape = {batch, height, width, channels};

@@ -3,7 +3,6 @@ build/*
 cmake-build/
 cmake-build-debug/
 docs/_build/
-*.a
 
 .idea/
 .vscode/
@@ -22,6 +21,9 @@ mace/codegen/tuning/
 mace/codegen/version/
 mace/codegen/engine/
 mace/codegen/lib/
+
+micro/codegen/models/
+micro/codegen/engines/
 
 examples/android/macelibrary/src/main/cpp/mace/
 examples/android/macelibrary/src/main/cpp/include/

@@ -20,17 +20,15 @@
 #include <cmath>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/ops/common/transpose.h"
 
 namespace mace {
 namespace ops {
 
-template<DeviceType D, typename T>
-class TransposeOp;
-
-template<DeviceType D>
-class TransposeOp<D, float> : public Operation {
+template<DeviceType D, class T>
+class TransposeOp : public Operation {
  public:
   explicit TransposeOp(OpConstructContext *context)
       : Operation(context),
@@ -53,8 +51,8 @@ class TransposeOp<D, float> : public Operation {
 
     Tensor::MappingGuard input_guard(input);
     Tensor::MappingGuard output_guard(output);
-    const float *input_data = input->data<float>();
-    float *output_data = output->mutable_data<float>();
+    const T *input_data = input->data<T>();
+    T *output_data = output->mutable_data<T>();
 
     return Transpose(&context->device()->cpu_runtime()->thread_pool(),
                      input_data, input->shape(), dims_, output_data);
@@ -64,9 +62,11 @@ class TransposeOp<D, float> : public Operation {
   std::vector<int> dims_;
 };
 
-void RegisterTranspose(OpRegistryBase *op_registry) {
+void RegisterTranspose(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "Transpose", TransposeOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Transpose", TransposeOp,
+                        DeviceType::CPU);
 }
 
 }  // namespace ops

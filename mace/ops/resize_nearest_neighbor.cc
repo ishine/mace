@@ -16,7 +16,8 @@
 #include <memory>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/ops/common/utils.h"
 #ifdef MACE_ENABLE_OPENCL
 #include "mace/ops/opencl/image/resize_nearest_neighbor.h"
@@ -145,7 +146,7 @@ template<>
 class ResizeNearestNeighborOp<DeviceType::GPU, float> : public Operation {
  public:
   explicit ResizeNearestNeighborOp(OpConstructContext *context)
-      : Operation(context) {
+      : Operation(context), dim_(Operation::GetRepeatedArgs<index_t>("dim")) {
     bool align_corners = Operation::GetOptionalArg<bool>(
         "align_corners", false);
     if (context->GetOpMemoryType() == MemoryType::GPU_IMAGE) {
@@ -163,17 +164,20 @@ class ResizeNearestNeighborOp<DeviceType::GPU, float> : public Operation {
                "input must be 4-dimensional and size must be 1-dimensional.",
                input->dim_size(), size->dim_size());
 
-    return kernel_->Compute(context, input, size, output);
+    return kernel_->Compute(context, input, size, dim_, output);
   }
 
  private:
+  std::vector<index_t> dim_;
   std::unique_ptr<OpenCLResizeNearestNeighborKernel> kernel_;
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterResizeNearestNeighbor(OpRegistryBase *op_registry) {
+void RegisterResizeNearestNeighbor(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "ResizeNearestNeighbor",
                    ResizeNearestNeighborOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "ResizeNearestNeighbor",
+                        ResizeNearestNeighborOp, DeviceType::CPU);
 
   MACE_REGISTER_GPU_OP(op_registry, "ResizeNearestNeighbor",
                        ResizeNearestNeighborOp);

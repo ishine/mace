@@ -85,7 +85,7 @@ in one deployment file.
     * - runtime
       - The running device, one of [cpu, gpu, dsp, cpu+gpu]. cpu+gpu contains CPU and GPU model definition so you can run the model on both CPU and GPU.
     * - data_type
-      - [optional] The data type used for specified runtime. [fp16_fp32, fp32_fp32] for GPU, default is fp16_fp32, [fp32] for CPU and [uint8] for DSP.
+      - [optional] The data type used for specified runtime. [fp16_fp32, fp32_fp32] for GPU; [fp16_fp32, bf16_fp32, fp32_fp32] for CPU, default is fp16_fp32.
     * - input_data_types
       - [optional] The input data type for specific op(eg. gather), which can be [int32, float32], default to float32.
     * - input_data_formats
@@ -106,7 +106,7 @@ in one deployment file.
 
     Some command tools:
 
-    .. code:: bash
+    .. code-block:: bash
 
         # Get device's soc info.
         adb shell getprop | grep platform
@@ -129,7 +129,7 @@ Run you model on the embedded device(ARM Linux)
 
 The way to run your model on the ARM Linux is nearly same as with android, except you need specify a device config file.
 
-.. code:: bash
+.. code-block:: bash
 
     python tools/converter.py run --config=/path/to/your/model_deployment_file.yml --device_yml=/path/to/devices.yml
 
@@ -139,7 +139,7 @@ There are two steps to do before run:
 
     MACE use ssh to connect embedded device, you should copy your public key to embedded device with the blow command.
 
-    .. code:: bash
+    .. code-block:: bash
 
       cat ~/.ssh/id_rsa.pub | ssh -q {user}@{ip} "cat >> ~/.ssh/authorized_keys"
 
@@ -176,7 +176,7 @@ There are two steps to do before run:
 
 
 Convert model(s) to C++ code
---------------------------------
+----------------------------
 
     * **1. Change the model deployment file(.yml)**
 
@@ -184,14 +184,14 @@ Convert model(s) to C++ code
 
         * convert model graph to code and model weight to file with below model configuration.
 
-        .. code:: sh
+        .. code-block:: sh
 
             model_graph_format: code
             model_data_format: file
 
         * convert both model graph and model weight to code with below model configuration.
 
-        .. code:: sh
+        .. code-block:: sh
 
             model_graph_format: code
             model_data_format: code
@@ -202,14 +202,14 @@ Convert model(s) to C++ code
 
     * **2. Convert model(s) to code**
 
-        .. code:: sh
+        .. code-block:: sh
 
             python tools/converter.py convert --config=/path/to/model_deployment_file.yml
 
         The command will generate **${library_name}.a** in **build/${library_name}/model** directory and
         ** *.h ** in **build/${library_name}/include** like the following dir-tree.
 
-        .. code::
+        .. code-block:: none
 
              # model_graph_format: code
              # model_data_format: file
@@ -240,7 +240,7 @@ Convert model(s) to C++ code
         * Link `libmace.a` and `${library_name}.a` to your target.
         * Refer to \ ``mace/tools/mace_run.cc``\ for full usage. The following list the key steps.
 
-        .. code:: cpp
+        .. code-block:: cpp
 
             // Include the headers
             #include "mace/public/mace.h"
@@ -269,8 +269,72 @@ Convert model(s) to C++ code
             // ... Same with the code in basic usage
 
 
-Tuning for specific SoC's GPU
+Transform models after conversion
 ---------------------------------
+
+    If ``model_graph_format`` or ``model_data_format`` is specified as `file`, the model or weight file will
+    be generated as a `.pb` or `.data` file after model conversion. After that, more transformations can be
+    applied to the generated files, such as compression or encryption. To achieve that, the model loading is
+    split to two stages: 1) load the file from file system to memory buffer; 2) create the MACE engine from the
+    model buffer. So between the two stages, transformations can be inserted to decompress or decrypt the model
+    buffer. The transformations are user defined. The following lists the key steps when both ``model_graph_format``
+    and ``model_data_format`` are set as `file`.
+
+    .. code-block:: cpp
+
+        // Load model graph from file system
+        std::unique_ptr<mace::port::ReadOnlyMemoryRegion> model_graph_data =
+            make_unique<mace::port::ReadOnlyBufferMemoryRegion>();
+        if (FLAGS_model_file != "") {
+          auto fs = GetFileSystem();
+          status = fs->NewReadOnlyMemoryRegionFromFile(FLAGS_model_file.c_str(),
+              &model_graph_data);
+          if (status != MaceStatus::MACE_SUCCESS) {
+            // Report error or fallback
+          }
+        }
+        // Load model data from file system
+        std::unique_ptr<mace::port::ReadOnlyMemoryRegion> model_weights_data =
+            make_unique<mace::port::ReadOnlyBufferMemoryRegion>();
+        if (FLAGS_model_data_file != "") {
+          auto fs = GetFileSystem();
+          status = fs->NewReadOnlyMemoryRegionFromFile(FLAGS_model_data_file.c_str(),
+              &model_weights_data);
+          if (status != MaceStatus::MACE_SUCCESS) {
+            // Report error or fallback
+          }
+        }
+        if (model_graph_data == nullptr || model_weights_data == nullptr) {
+          // Report error or fallback
+        }
+
+        std::vector<unsigned char> transformed_model_graph_data;
+        std::vector<unsigned char> transformed_model_weights_data;
+        // Add transformations here.
+        ...
+        // Release original model data after transformations
+        model_graph_data.reset();
+        model_weights_data.reset();
+
+        // Create the MACE engine from the model buffer
+        std::shared_ptr<mace::MaceEngine> engine;
+        MaceStatus create_engine_status;
+        create_engine_status =
+            CreateMaceEngineFromProto(transformed_model_graph_data.data(),
+                                      transformed_model_graph_data.size(),
+                                      transformed_model_weights_data.data(),
+                                      transformed_model_weights_data.size(),
+                                      input_names,
+                                      output_names,
+                                      config,
+                                      &engine);
+        if (create_engine_status != MaceStatus::MACE_SUCCESS) {
+          // Report error or fallback
+        }
+
+
+Tuning for specific SoC's GPU
+-----------------------------
 
     If you want to use the GPU of a specific device, you can just specify the ``target_socs`` in your YAML file and
     then tune the MACE lib for it (OpenCL kernels), which may get 1~10% performance improvement.
@@ -279,7 +343,7 @@ Tuning for specific SoC's GPU
 
         Specify ``target_socs`` in your model deployment file(.yml):
 
-        .. code:: sh
+        .. code-block:: sh
 
             target_socs: [sdm845]
 
@@ -289,7 +353,7 @@ Tuning for specific SoC's GPU
 
     * **2. Convert model(s)**
 
-        .. code:: sh
+        .. code-block:: sh
 
             python tools/converter.py convert --config=/path/to/model_deployment_file.yml
 
@@ -303,13 +367,13 @@ Tuning for specific SoC's GPU
              You should plug in device(s) with the specific SoC(s).
 
 
-        .. code:: sh
+        .. code-block:: sh
 
             python tools/converter.py run --config=/path/to/model_deployment_file.yml --validate
 
         The command will generate two files in `build/${library_name}/opencl`, like the following dir-tree.
 
-        .. code::
+        .. code-block:: none
 
               build
               └── mobilenet-v2
@@ -336,7 +400,7 @@ Tuning for specific SoC's GPU
         * Change the names of files generated above for not collision and push them to **your own device's directory**.
         * Use like the previous procedure, below lists the key steps differently.
 
-        .. code:: cpp
+        .. code-block:: cpp
 
             // Include the headers
             #include "mace/public/mace.h"
@@ -379,7 +443,7 @@ Useful Commands
 ---------------
 * **run the model**
 
-.. code:: sh
+.. code-block:: sh
 
     # Test model run time
     python tools/converter.py run --config=/path/to/model_deployment_file.yml --round=100
@@ -403,7 +467,7 @@ Useful Commands
 
 the detailed information is in :doc:`benchmark`.
 
-.. code:: sh
+.. code-block:: sh
 
     # Benchmark model, get detailed statistics of each Op.
     python tools/converter.py run --config=/path/to/model_deployment_file.yml --benchmark
@@ -446,7 +510,7 @@ the detailed information is in :doc:`benchmark`.
 
 Use ``-h`` to get detailed help.
 
-.. code:: sh
+.. code-block:: sh
 
     python tools/converter.py -h
     python tools/converter.py build -h
@@ -480,7 +544,7 @@ Reduce Library Size
 Remove the registration of the ops unused for your models in the ``mace/ops/ops_register.cc``,
 which will reduce the library size significantly. the final binary just link the registered ops' code.
 
-.. code:: cpp
+.. code-block:: cpp
 
     #include "mace/ops/ops_register.h"
 
@@ -493,7 +557,7 @@ which will reduce the library size significantly. the final binary just link the
     }  // namespace ops
 
 
-    OpRegistry::OpRegistry() : OpRegistryBase() {
+    OpRegistry::OpRegistry() {
     // Just leave the ops used in your models
 
       ...
@@ -513,12 +577,17 @@ so MACE provides several ways to reduce the model size with no or little perform
 
 **1. Save model weights in half-precision floating point format**
 
-The default data type of a regular model is float (32bit). To reduce the model weights size,
+The data type of a regular model is float (32bit). To reduce the model weights size,
 half (16bit) can be used to reduce it by half with negligible accuracy degradation.
+Therefore, the default storage type for a regular model in MACE is half. However,
+if the model is very sensitive to accuracy, storage type can be changed to float.
 
-For CPU, ``data_type`` can be specified as ``fp16_fp32`` in the deployment file to save the weights in half and actual inference in float.
+In the deployment file, ``data_type`` is ``fp16_fp32`` by default and can be changed to ``fp32_fp32``,
+for CPU it can also be changed to ``bf16_fp32``.
 
-For GPU, ``fp16_fp32`` is default. The ops in GPU take half as inputs and outputs while kernel execution in float.
+For CPU, ``fp16_fp32`` means that the weights are saved in half and actual inference is in float; while ``bf16_fp32`` means that the weights are saved in bfloat16 and actual inference is in float.
+
+For GPU, ``fp16_fp32`` means that the ops in GPU take half as inputs and outputs while kernel execution in float.
 
 **2. Save model weights in quantized fixed point format**
 

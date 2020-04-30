@@ -18,7 +18,8 @@
 #include <memory>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -73,11 +74,12 @@ class ArgMaxOp : public Operation {
     if (argmin_) {
       for (index_t i = 0; i < outer_size; ++i) {
         int idx = 0;
-        T min_value = std::numeric_limits<T>::max();
+        float min_value = std::numeric_limits<float>::max();
         const T *input_ptr = input_data + i * inner_size;
         for (index_t j = 0; j < inner_size; ++j) {
-          if (input_ptr[j] < min_value) {
-            min_value = input_ptr[j];
+          float input_value = input_ptr[j];
+          if (input_value < min_value) {
+            min_value = input_value;
             idx = j;
           }
         }
@@ -86,11 +88,12 @@ class ArgMaxOp : public Operation {
     } else {
       for (index_t i = 0; i < outer_size; ++i) {
         int idx = 0;
-        T max_value = std::numeric_limits<T>::lowest();
+        float max_value = std::numeric_limits<float>::lowest();
         const T *input_ptr = input_data + i * inner_size;
         for (index_t j = 0; j < inner_size; ++j) {
-          if (input_ptr[j] > max_value) {
-            max_value = input_ptr[j];
+          float input_value = input_ptr[j];
+          if (input_value > max_value) {
+            max_value = input_value;
             idx = j;
           }
         }
@@ -109,9 +112,9 @@ class ArgMaxOp : public Operation {
 
 
 
-void RegisterArgMax(OpRegistryBase *op_registry) {
-  MACE_REGISTER_OP(op_registry, "ArgMax", ArgMaxOp,
-                   DeviceType::CPU, float);
+void RegisterArgMax(OpRegistry *op_registry) {
+  MACE_REGISTER_OP(op_registry, "ArgMax", ArgMaxOp, DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "ArgMax", ArgMaxOp, DeviceType::CPU);
 }
 
 }  // namespace ops

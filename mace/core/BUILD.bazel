@@ -9,6 +9,7 @@ load(
     "if_android",
     "if_android_armv7",
     "if_apu_enabled",
+    "if_bfloat16_enabled",
     "if_hexagon_enabled",
     "if_hexagon_or_hta_enabled",
     "if_hta_enabled",
@@ -18,6 +19,7 @@ load(
     "if_opencl_enabled",
     "if_openmp_enabled",
     "if_quantize_enabled",
+    "if_rpcmem_enabled",
 )
 
 cc_library(
@@ -25,23 +27,43 @@ cc_library(
     srcs = glob(
         [
             "*.cc",
+            "ops/*.cc",
+            "registry/*.cc",
             "runtime/cpu/*.cc",
+        ],
+        exclude = [
+            "rpcmem.cc",
         ],
     ) + if_opencl_enabled(glob(
         [
             "runtime/opencl/*.cc",
         ],
-    )) + if_hexagon_enabled([
+    )) + if_hexagon_or_hta_enabled([
+        "runtime/hexagon/hexagon_allocator.h",
+        "runtime/hexagon/hexagon_allocator.cc",
+        "runtime/hexagon/hexagon_device.cc",
+    ]) + if_hexagon_enabled([
         "runtime/hexagon/hexagon_dsp_wrapper.cc",
     ]) + if_hta_enabled([
+        "runtime/hexagon/hexagon_hta_transformer.h",
+        "runtime/hexagon/hexagon_hta_transformer.cc",
         "runtime/hexagon/hexagon_hta_wrapper.cc",
     ]) + if_apu_enabled(glob([
         "runtime/apu/*.cc",
-    ])),
-    hdrs = glob([
-        "*.h",
-        "runtime/cpu/*.h",
-    ]) + if_opencl_enabled(glob([
+    ])) + if_rpcmem_enabled([
+        "rpcmem.cc",
+    ]),
+    hdrs = glob(
+        [
+            "*.h",
+            "ops/*.h",
+            "registry/*.h",
+            "runtime/cpu/*.h",
+        ],
+        exclude = [
+            "rpcmem.h",
+        ],
+    ) + if_opencl_enabled(glob([
         "runtime/opencl/*.h",
     ])) + if_hexagon_or_hta_enabled(glob([
         "runtime/hexagon/hexagon_control_wrapper.h",
@@ -51,8 +73,10 @@ cc_library(
     ])) + if_hta_enabled(glob([
         "runtime/hexagon/*hta*.h",
     ])) + if_apu_enabled(glob([
-        "runtime/apu/*.h"
-    ])),
+        "runtime/apu/*.h",
+    ])) + if_rpcmem_enabled([
+        "rpcmem.h",
+    ]),
     copts = [
         "-Werror",
         "-Wextra",
@@ -64,6 +88,8 @@ cc_library(
         "-DMACE_ENABLE_OPENCL",
     ]) + if_quantize_enabled([
         "-DMACE_ENABLE_QUANTIZE",
+    ]) + if_bfloat16_enabled([
+        "-DMACE_ENABLE_BFLOAT16",
     ]) + if_hexagon_enabled([
         "-DMACE_ENABLE_HEXAGON",
     ]) + if_hta_enabled([
@@ -75,6 +101,8 @@ cc_library(
     ]) + if_android_armv7([
         "-mfpu=neon-fp16",
         "-mfloat-abi=softfp",
+    ]) + if_rpcmem_enabled([
+        "-DMACE_ENABLE_RPCMEM",
     ]),
     linkopts = ["-ldl"],
     deps = [
@@ -94,6 +122,8 @@ cc_library(
         "//third_party/hta",
     ]) + if_apu_enabled([
         "//third_party/apu:libapu-frontend",
+    ]) + if_rpcmem_enabled([
+        "//third_party/rpcmem",
     ]),
 )
 

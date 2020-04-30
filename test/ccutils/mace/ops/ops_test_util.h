@@ -31,7 +31,9 @@
 #include "mace/core/device_context.h"
 #include "mace/core/tensor.h"
 #include "mace/core/workspace.h"
-#include "mace/ops/registry/ops_registry.h"
+#include "mace/core/registry/ops_registry.h"
+#include "mace/core/registry/op_delegator_registry.h"
+#include "mace/ops/registry/registry.h"
 #include "mace/public/mace.h"
 #include "mace/utils/memory.h"
 #include "mace/utils/math.h"
@@ -109,7 +111,12 @@ class OpTestContext {
 class OpsTestNet {
  public:
   OpsTestNet() :
-    op_registry_(make_unique<OpRegistry>()) {}
+    op_registry_(make_unique<OpRegistry>()),
+    op_delegator_registry_(make_unique<OpDelegatorRegistry>()),
+    ws_(op_delegator_registry_.get()) {
+    ops::RegisterAllOps(op_registry_.get());
+    ops::RegisterAllOpDelegators(op_delegator_registry_.get());
+  }
 
   template <DeviceType D, typename T>
   void AddInputFromArray(const std::string &name,
@@ -124,7 +131,8 @@ class OpsTestNet {
     input->Resize(shape);
     Tensor::MappingGuard input_mapper(input);
     T *input_data = input->mutable_data<T>();
-    MACE_CHECK(static_cast<size_t>(input->size()) == data.size());
+    MACE_CHECK(static_cast<size_t>(input->size()) == data.size(),
+               input->size(), " VS ", data.size());
     memcpy(input_data, data.data(), data.size() * sizeof(T));
     input->SetScale(scale);
     input->SetZeroPoint(zero_point);
@@ -425,7 +433,8 @@ class OpsTestNet {
   void Sync();
 
  public:
-  std::shared_ptr<OpRegistryBase> op_registry_;
+  std::unique_ptr<OpRegistry> op_registry_;
+  std::unique_ptr<OpDelegatorRegistry> op_delegator_registry_;
   Workspace ws_;
   std::vector<OperatorDef> op_defs_;
   std::unique_ptr<NetBase> net_;

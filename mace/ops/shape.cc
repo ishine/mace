@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -58,9 +59,11 @@ class ShapeOp : public Operation {
   MACE_OP_OUTPUT_TAGS(OUTPUT);
 };
 
-void RegisterShape(OpRegistryBase *op_registry) {
+void RegisterShape(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "Shape", ShapeOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Shape", ShapeOp,
+                        DeviceType::CPU);
 }
 
 }  // namespace ops

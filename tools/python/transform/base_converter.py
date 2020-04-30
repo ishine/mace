@@ -65,6 +65,7 @@ class EltwiseType(Enum):
     EQUAL = 10
     FLOOR_DIV = 11
     CLIP = 12
+    SIGN = 13
 
 
 class ReduceType(Enum):
@@ -100,7 +101,6 @@ MaceSupportedOps = [
     'Conv2D',
     'Crop',
     'Deconv2D',
-    'Delay',
     'DepthToSpace',
     'DepthwiseConv2d',
     'DepthwiseDeconv2d',
@@ -112,6 +112,7 @@ MaceSupportedOps = [
     'FullyConnected',
     'Gather',
     'Identity',
+    'IfDefined',
     'InferConv2dShape',
     'KaldiBatchNorm',
     'LocalResponseNorm',
@@ -128,12 +129,14 @@ MaceSupportedOps = [
     'Proposal',
     'Quantize',
     'Reduce',
+    'ReplaceIndex',
     'Reshape',
     'ResizeBicubic',
     'ResizeBilinear',
     'ResizeNearestNeighbor',
     'Reverse',
     'ScalarMath',
+    'Select',
     'Slice',
     'Splice',
     'Split',
@@ -147,11 +150,14 @@ MaceSupportedOps = [
     'SpaceToBatchND',
     'SpaceToDepth',
     'SqrDiffMean',
+    'Subsample',
     'SumGroup',
     'TargetRMSNorm',
     'Transpose',
     'Cumsum',
     'Tile',
+    'LpNorm',
+    'MVNorm',
 ]
 
 MaceOp = Enum('MaceOp', [(op, op) for op in MaceSupportedOps], type=str)
@@ -169,7 +175,9 @@ MaceFixedDataFormatOps = [MaceOp.BatchNorm,
                           MaceOp.ResizeBilinear,
                           MaceOp.ResizeNearestNeighbor,
                           MaceOp.SpaceToBatchND,
-                          MaceOp.SpaceToDepth]
+                          MaceOp.SpaceToDepth,
+                          MaceOp.LpNorm,
+                          MaceOp.MVNorm]
 
 MaceTransposableDataFormatOps = [MaceOp.Activation,
                                  MaceOp.AddN,
@@ -180,6 +188,7 @@ MaceTransposableDataFormatOps = [MaceOp.Activation,
                                  MaceOp.Eltwise,
                                  MaceOp.Pad,
                                  MaceOp.Reduce,
+                                 MaceOp.Reshape,
                                  MaceOp.Softmax,
                                  MaceOp.Split,
                                  MaceOp.Squeeze,
@@ -264,10 +273,15 @@ class MaceKeyword(object):
     mace_reverse_str = 'reverse'
     mace_const_data_num_arg_str = 'const_data_num'
     mace_coeff_str = 'coeff'
+    mace_input_indexes_str = 'input_indexes'
+    mace_output_indexes_str = 'output_indexes'
+    mace_p_str = 'p'
+    mace_nor_var_str = 'normalize_variance'
+    mace_across_ch_str = 'across_channels'
 
 
 class TransformerRule(Enum):
-    REMOVE_IDENTITY_OP = 1
+    REMOVE_USELESS_OP = 1
     TRANSFORM_GLOBAL_POOLING = 2
     FOLD_RESHAPE = 3
     TRANSFORM_MATMUL_TO_FC = 4
@@ -310,6 +324,7 @@ class TransformerRule(Enum):
     FP16_MATMUL_WEIGHT = 41
     FP16_GATHER_WEIGHT = 42
     QUANTIZE_LARGE_WEIGHTS = 43
+    TRANSPOSE_SHAPE_TENSOR_TO_PARAM = 44
 
 
 class ConverterInterface(object):
@@ -389,6 +404,7 @@ class ConverterOption(object):
         self._change_concat_ranges = False
         self._transformer_option = None
         self._cl_mem_type = "image"
+        self._quantize_stat = False
 
     @property
     def input_nodes(self):
@@ -437,6 +453,10 @@ class ConverterOption(object):
     @property
     def cl_mem_type(self):
         return self._cl_mem_type
+
+    @property
+    def quantize_stat(self):
+        return self._quantize_stat
 
     @input_nodes.setter
     def input_nodes(self, input_nodes):
@@ -498,6 +518,10 @@ class ConverterOption(object):
     def cl_mem_type(self, cl_mem_type):
         self._cl_mem_type = cl_mem_type
 
+    @quantize_stat.setter
+    def quantize_stat(self, quantize_stat):
+        self._quantize_stat = quantize_stat
+
     def disable_transpose_filters(self):
         if TransformerRule.TRANSPOSE_FILTERS in self._transformer_option:
             self._transformer_option.remove(TransformerRule.TRANSPOSE_FILTERS)
@@ -513,13 +537,14 @@ class ConverterOption(object):
         else:
             self._transformer_option = [
                 # Model structure related transformation
-                TransformerRule.REMOVE_IDENTITY_OP,
+                TransformerRule.REMOVE_USELESS_OP,
                 TransformerRule.TRANSFORM_FAKE_QUANTIZE,
-                TransformerRule.REMOVE_IDENTITY_OP,
+                TransformerRule.REMOVE_USELESS_OP,
                 TransformerRule.TRANSFORM_GLOBAL_POOLING,
                 TransformerRule.TRANSFORM_LSTMCELL_ZEROSTATE,
                 TransformerRule.TRANSFORM_BASIC_LSTMCELL,
                 TransformerRule.TRANSPOSE_RESHAPE_AND_FLATTEN,
+                TransformerRule.TRANSPOSE_SHAPE_TENSOR_TO_PARAM,
                 TransformerRule.FOLD_RESHAPE,
                 TransformerRule.TRANSFORM_MATMUL_TO_FC,
                 # For StoB -> conv -> BtoS -> BN pattern

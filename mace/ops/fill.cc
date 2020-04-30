@@ -13,7 +13,8 @@
 // limitations under the License.
 
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -21,8 +22,8 @@ namespace ops {
 template <DeviceType D, class T>
 class FillOp;
 
-template <>
-class FillOp<DeviceType::CPU, float> : public Operation {
+template <class T>
+class FillOp<DeviceType::CPU, T> : public Operation {
  public:
   explicit FillOp(OpConstructContext *context)
       : Operation(context) {}
@@ -45,11 +46,11 @@ class FillOp<DeviceType::CPU, float> : public Operation {
     }
 
     Tensor::MappingGuard value_guard(value);
-    const float *value_data = value->data<float>();
+    const T *value_data = value->data<T>();
 
     MACE_RETURN_IF_ERROR(output->Resize(output_shape));
     Tensor::MappingGuard output_guard(output);
-    float *output_data = output->mutable_data<float>();
+    T *output_data = output->mutable_data<T>();
 
     std::fill(output_data, output_data + output->size(), *value_data);
 
@@ -61,9 +62,10 @@ class FillOp<DeviceType::CPU, float> : public Operation {
   MACE_OP_OUTPUT_TAGS(OUTPUT);
 };
 
-void RegisterFill(OpRegistryBase *op_registry) {
+void RegisterFill(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "Fill", FillOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Fill", FillOp, DeviceType::CPU);
 }
 
 }  // namespace ops

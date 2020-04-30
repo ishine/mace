@@ -5,7 +5,7 @@ Basic usage for Bazel users
 Build and run an example model
 -------------------------------
 
-At first, make sure the environment has been set up correctly already (refer to :doc:`../installation/env_requirement`).
+At first, make sure the environment has been set up correctly already (refer to :doc:`../installation/env_requirement.rst`).
 
 The followings are instructions about how to quickly build and run a provided model in
 `MACE Model Zoo <https://github.com/XiaoMi/mace-models>`__.
@@ -16,7 +16,7 @@ Here we use the mobilenet-v2 model as an example.
 
     1. Pull `MACE <https://github.com/XiaoMi/mace>`__ project.
 
-    .. code:: sh
+    .. code-block:: sh
 
         git clone https://github.com/XiaoMi/mace.git
         cd mace/
@@ -33,33 +33,33 @@ Here we use the mobilenet-v2 model as an example.
 
     2. Pull `MACE Model Zoo <https://github.com/XiaoMi/mace-models>`__ project.
 
-    .. code:: sh
+    .. code-block:: sh
 
         git clone https://github.com/XiaoMi/mace-models.git
 
 
     3. Build a generic MACE library.
 
-    .. code:: sh
+    .. code-block:: sh
 
         cd path/to/mace
         # Build library
         # output lib path: build/lib
-        bash tools/bazel-build-standalone-lib.sh
-
+        bash tools/bazel_build_standalone_lib.sh [-abi=abi][-runtimes=rt1,rt2,...][-static]
 
     .. note::
 
         - This step can be skipped if you just want to run a model using ``tools/converter.py``, such as commands in step 5.
-
-        - Libraries in ``build/lib/armeabi-v7a/cpu_gpu/`` means it can run on ``cpu`` or ``gpu`` devices.
-
-        - The results in ``build/lib/armeabi-v7a/cpu_gpu_dsp/`` need HVX supported.
+        - Use the `-abi` parameter to specify the ABI. Supported ABIs are armeabi-v7a, arm64-v8a, arm_linux_gnueabihf, aarch64_linux_gnu and host (for host machine, linux-x86-64). The default ABI is arm64-v8a.
+        - For each ABI, several runtimes can be chosen by specifying the `-runtimes` parameter. Supported runtimes are CPU, GPU, DSP and APU. By default, the library is built to run on CPU.
+        - Omit the `-static` option if a shared library is desired instead of a static one. By default, a shared library is built.
+        - See 'bash tools/bazel_build_standalone_lib.sh -help' for detailed information.
+        - DO respect the hyphens ('-') and the underscores ('_') in the ABI.
 
 
     4. Convert the pre-trained mobilenet-v2 model to MACE format model.
 
-    .. code:: sh
+    .. code-block:: sh
 
         cd path/to/mace
         # Build library
@@ -73,7 +73,7 @@ Here we use the mobilenet-v2 model as an example.
         If you want to run on phone, please plug in at least one phone.
         Or if you want to run on embedded device, please give a :doc:`advanced_usage`.
 
-    .. code:: sh
+    .. code-block:: sh
 
         # Run
         python tools/converter.py run --config=/path/to/mace-models/mobilenet-v2/mobilenet-v2.yml
@@ -107,7 +107,7 @@ MACE now supports models from TensorFlow and Caffe (more frameworks will be supp
 
    If your model is from lower version Caffe, you need to upgrade it by using the Caffe built-in tool before converting.
 
-   .. code:: bash
+   .. code-block:: bash
 
        # Upgrade prototxt
        $CAFFE_ROOT/build/tools/upgrade_net_proto_text MODEL.prototxt MODEL.new.prototxt
@@ -123,7 +123,7 @@ MACE now supports models from TensorFlow and Caffe (more frameworks will be supp
    This tool will improve the efficiency of inference like the `Graph Transform Tool <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/graph_transforms/README.md>`__
    in TensorFlow.
 
-   .. code:: bash
+   .. code-block:: bash
 
        # Optimize your model
        $python MACE_ROOT/tools/onnx_optimizer.py model.onnx model_opt.onnx
@@ -165,7 +165,7 @@ More details about model deployment file are in :doc:`advanced_usage`.
 
 When the deployment file is ready, you can use MACE converter tool to convert your model(s).
 
-.. code:: bash
+.. code-block:: bash
 
     python tools/converter.py convert --config=/path/to/your/model_deployment_file.yml
 
@@ -184,19 +184,18 @@ You could Download the prebuilt MACE Library from `Github MACE release page <htt
 
 Or use bazel to build MACE source code into a library.
 
-    .. code:: sh
+    .. code-block:: sh
 
         cd path/to/mace
         # Build library
         # output lib path: build/lib
-        bash tools/bazel-build-standalone-lib.sh
+        bash tools/bazel_build_standalone_lib.sh [-abi=abi][-runtimes=rt1,rt2,...][-static]
 
-The above command will generate dynamic library ``build/lib/${ABI}/${DEVICES}/libmace.so`` and static library ``build/lib/${ABI}/${DEVICES}/libmace.a``.
+The above command will generate static library ``build/lib/libmace.a`` dynamic library ``build/lib/libmace.so``.
 
     .. warning::
 
-        Please verify that the target_abis param in the above command and your deployment file are the same.
-
+        Please verify that the -abi param in the above command is the same as the target_abi param in your deployment file.
 
 ==================
 5. Run your model
@@ -213,7 +212,7 @@ to run and validate your model.
 
     run the model.
 
-    .. code:: sh
+    .. code-block:: sh
 
     	# Test model run time
         python tools/converter.py run --config=/path/to/your/model_deployment_file.yml --round=100
@@ -230,7 +229,7 @@ to run and validate your model.
 
     benchmark and profile the model. the details are in :doc:`benchmark`.
 
-    .. code:: sh
+    .. code-block:: sh
 
         # Benchmark model, get detailed statistics of each Op.
         python tools/converter.py run --config=/path/to/your/model_deployment_file.yml --benchmark
@@ -256,7 +255,7 @@ However, there are some differences in different devices.
 
     MACE only supports Qualcomm DSP. And you need to push the hexagon nn library to the device.
 
-    .. code:: sh
+    .. code-block:: sh
 
         # For Android device
         adb root; adb remount
@@ -276,7 +275,7 @@ header files.
 
 -  The generated ``static`` library files are organized as follows,
 
-.. code::
+.. code-block:: none
 
     build
     ├── include
@@ -284,21 +283,9 @@ header files.
     │       └── public
     │           └── mace.h
     ├── lib
-    │   ├── arm64-v8a
-    │   │   └── cpu_gpu
-    │   │       ├── libmace.a
-    │   │       └── libmace.so
-    │   ├── armeabi-v7a
-    │   │   ├── cpu_gpu
-    │   │   │   ├── libmace.a
-    │   │   │   └── libmace.so
-    │   │   └── cpu_gpu_dsp
-    │   │       ├── libhexagon_controller.so
-    │   │       ├── libmace.a
-    │   │       └── libmace.so
-    │   └── linux-x86-64
-    │       ├── libmace.a
-    │       └── libmace.so
+    │   ├── libmace.a	(for static library)
+    │   ├── libmace.so	(for shared library)
+    │   └── libhexagon_controller.so	(for DSP runtime)
     └── mobilenet-v1
         ├── model
         │   ├── mobilenet_v1.data
@@ -310,7 +297,7 @@ header files.
 
 Please refer to \ ``mace/tools/mace_run.cc``\ for full usage. The following list the key steps.
 
-.. code:: cpp
+.. code-block:: cpp
 
     // Include the headers
     #include "mace/public/mace.h"
@@ -387,3 +374,4 @@ Please refer to \ ``mace/tools/mace_run.cc``\ for full usage. The following list
     MaceStatus status = engine.Run(inputs, &outputs);
 
 More details are in :doc:`advanced_usage`.
+

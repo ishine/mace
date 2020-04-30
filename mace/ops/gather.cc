@@ -14,7 +14,8 @@
 
 #include <algorithm>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -85,9 +86,10 @@ class GatherOp : public Operation {
   MACE_OP_OUTPUT_TAGS(OUTPUT);
 };
 
-void RegisterGather(OpRegistryBase *op_registry) {
+void RegisterGather(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "Gather", GatherOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "Gather", GatherOp, DeviceType::CPU);
 
 #ifdef MACE_ENABLE_QUANTIZE
   MACE_REGISTER_OP(op_registry, "Gather", GatherOp,

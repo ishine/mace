@@ -8,20 +8,33 @@ set(CORE_SRCS
   net.cc
   net_def_adapter.cc
   net_optimizer.cc
-  op_context.cc
-  operator.cc
+  ops/op_condition_builder.cc
+  ops/op_condition_context.cc
+  ops/op_construct_context.cc
+  ops/op_context.cc
+  ops/operator.cc
+  ops/op_init_context.cc
   quantize.cc
+  registry/op_delegator_registry.cc
+  registry/op_registration_info.cc
+  registry/ops_registry.cc
   runtime_failure_mock.cc
   types.cc
   workspace.cc
   runtime/cpu/cpu_runtime.cc
 )
 
+if(MACE_ENABLE_RPCMEM)
+  set(CORE_SRCS ${CORE_SRCS} rpcmem.cc)
+  set(EXTRA_LINK_LIBS ${EXTRA_LINK_LIBS} rpcmem)
+endif(MACE_ENABLE_RPCMEM)
+
 if(MACE_ENABLE_OPENCL)
   set(CORE_SRCS ${CORE_SRCS}
     runtime/opencl/gpu_device.cc
     runtime/opencl/gpu_runtime.cc
     runtime/opencl/opencl_allocator.cc
+    runtime/opencl/opencl_helper.cc
     runtime/opencl/opencl_runtime.cc
     runtime/opencl/opencl_util.cc
     runtime/opencl/opencl_wrapper.cc
@@ -30,14 +43,22 @@ if(MACE_ENABLE_OPENCL)
   set(EXTRA_LINK_LIBS ${EXTRA_LINK_LIBS} generated_opencl_kernel dl)
 endif(MACE_ENABLE_OPENCL)
 
+if(MACE_ENABLE_HEXAGON_DSP OR MACE_ENABLE_HEXAGON_HTA)
+  set(CORE_SRCS ${CORE_SRCS}
+    runtime/hexagon/hexagon_allocator.cc
+    runtime/hexagon/hexagon_device.cc
+  )
+endif(MACE_ENABLE_HEXAGON_DSP OR MACE_ENABLE_HEXAGON_HTA)
+
 if(MACE_ENABLE_HEXAGON_DSP)
   set(CORE_SRCS ${CORE_SRCS} runtime/hexagon/hexagon_dsp_wrapper.cc)
   set(EXTRA_LINK_LIBS ${EXTRA_LINK_LIBS} hexagon_controller)
 endif(MACE_ENABLE_HEXAGON_DSP)
 
 if(MACE_ENABLE_HEXAGON_HTA)
+  set(CORE_SRCS ${CORE_SRCS} runtime/hexagon/hexagon_hta_transformer.cc)
   set(CORE_SRCS ${CORE_SRCS} runtime/hexagon/hexagon_hta_wrapper.cc)
-  set(EXTRA_LINK_LIBS ${EXTRA_LINK_LIBS} hta_controller hta_hexagon_runtime npu)
+  set(EXTRA_LINK_LIBS ${EXTRA_LINK_LIBS} hta_hexagon_runtime)
 endif(MACE_ENABLE_HEXAGON_HTA)
 
 if(MACE_ENABLE_MTK_APU)

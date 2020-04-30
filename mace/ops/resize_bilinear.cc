@@ -16,7 +16,8 @@
 #include <memory>
 #include <vector>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 #include "mace/utils/memory.h"
 #include "mace/core/quantize.h"
 #include "mace/ops/common/utils.h"
@@ -56,15 +57,7 @@ inline T ComputeLerp(const T top_left,
                      const T bottom_left,
                      const T bottom_right,
                      const float x_lerp,
-                     const float y_lerp);
-
-template<>
-inline float ComputeLerp<float>(const float top_left,
-                                const float top_right,
-                                const float bottom_left,
-                                const float bottom_right,
-                                const float x_lerp,
-                                const float y_lerp) {
+                     const float y_lerp) {
   const float top = top_left + (top_right - top_left) * x_lerp;
   const float bottom = bottom_left + (bottom_right - bottom_left) * x_lerp;
   return top + (bottom - top) * y_lerp;
@@ -366,9 +359,11 @@ class ResizeBilinearOp<DeviceType::GPU, float> : public Operation {
 };
 #endif  // MACE_ENABLE_OPENCL
 
-void RegisterResizeBilinear(OpRegistryBase *op_registry) {
+void RegisterResizeBilinear(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "ResizeBilinear", ResizeBilinearOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "ResizeBilinear", ResizeBilinearOp,
+                        DeviceType::CPU);
 
 #ifdef MACE_ENABLE_QUANTIZE
   MACE_REGISTER_OP(op_registry, "ResizeBilinear", ResizeBilinearOp,

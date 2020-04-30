@@ -12,15 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mace/ops/arm/fp32/conv_2d_5x5.h"
-
 #include <arm_neon.h>
 #include <memory>
+
+#include "mace/ops/arm/fp32/conv_2d.h"
+#include "mace/ops/delegator/conv_2d.h"
 
 namespace mace {
 namespace ops {
 namespace arm {
 namespace fp32 {
+
+class Conv2dK5x5S1 : public Conv2dBase {
+ public:
+  explicit Conv2dK5x5S1(const delegator::Conv2dParam &param)
+      : Conv2dBase(param) {}
+  virtual ~Conv2dK5x5S1() {}
+
+  MaceStatus Compute(
+      const OpContext *context,
+      const Tensor *input,
+      const Tensor *filter,
+      Tensor *output) override;
+};
 
 #define MACE_Conv2dNeonK5x5SnLoadCalc4                    \
   /* load filter (4 outch x 1 height x 4 width) */        \
@@ -242,6 +256,13 @@ MaceStatus Conv2dK5x5S1::Compute(const OpContext *context,
 
   UnPadOutput(*out_tensor, output);
   return MaceStatus::MACE_SUCCESS;
+}
+
+void RegisterConv2dK5x5Delegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, Conv2dK5x5S1, delegator::Conv2dParam,
+      MACE_DELEGATOR_KEY_EX(Conv2d, DeviceType::CPU,
+                            float, ImplType::NEON, K5x5S1));
 }
 
 }  // namespace fp32

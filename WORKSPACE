@@ -3,6 +3,7 @@ workspace(name = "mace")
 # generate version and opencl kernel code.
 load("//repository/git:git_configure.bzl", "git_version_repository")
 load("//repository/opencl-kernel:opencl_kernel_configure.bzl", "encrypt_opencl_kernel_repository")
+load("//micro:micro.bzl", "new_local_repository_env")
 
 git_version_repository(name = "local_version_config")
 
@@ -78,10 +79,10 @@ new_http_archive(
 
 http_archive(
     name = "gemmlowp",
-    sha256 = "f340384e7728cea605e83597593699dfe8d13ff333b834d24c256935e3dc1758",
-    strip_prefix = "gemmlowp-master-48c0547a046d49b466aa01e3a82a18028f288924",
+    sha256 = "d445e5a0ef6ae18dcb68adb3c38245708cb357c0e1e51cb752dd933b7c975314",
+    strip_prefix = "gemmlowp-76272a197495297154e97cdcb624a52581165497",
     urls = [
-        "http://cnbj1.fds.api.xiaomi.com/mace/third-party/gemmlowp/gemmlowp-master-48c0547a046d49b466aa01e3a82a18028f288924.zip",
+        "http://cnbj1.fds.api.xiaomi.com/mace/third-party/gemmlowp/gemmlowp-76272a197495297154e97cdcb624a52581165497.zip",
     ],
 )
 
@@ -160,4 +161,16 @@ new_http_archive(
         "https://cnbj1.fds.api.xiaomi.com/mace/third-party/gcc-linaro/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu.tar.xz",
         "https://releases.linaro.org/components/toolchain/binaries/7.3-2018.05/aarch64-linux-gnu/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu.tar.xz",
     ],
+)
+
+new_local_repository_env(
+    name = "hexagon_sdk",
+    build_file = "third_party/hexagon/hexagon_sdk.BUILD",
+    path = "${HEXAGON_SDK_ROOT}",
+)
+
+new_local_repository_env(
+    name = "hexagon_tools",
+    build_file = "third_party/hexagon/hexagon_tools.BUILD",
+    path = "${HL_HEXAGON_TOOLS}",
 )

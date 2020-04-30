@@ -176,10 +176,14 @@ MaceStatus Gemv<OUTPUT_TYPE>::Compute(const OpContext *context,
   return MaceStatus::MACE_SUCCESS;
 }
 
-template
-class Gemv<uint8_t>;
-template
-class Gemv<int32_t>;
+void RegisterGemvDelegator(OpDelegatorRegistry *registry) {
+  MACE_REGISTER_DELEGATOR(
+      registry, Gemv<uint8_t>, DelegatorParam,
+      MACE_DELEGATOR_KEY(Gemv, DeviceType::CPU, uint8_t, ImplType::NEON));
+  MACE_REGISTER_DELEGATOR(
+      registry, Gemv<int32_t>, DelegatorParam,
+      MACE_DELEGATOR_KEY(Gemv, DeviceType::CPU, int32_t, ImplType::NEON));
+}
 
 }  // namespace q8
 }  // namespace arm

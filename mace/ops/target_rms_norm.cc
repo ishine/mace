@@ -22,7 +22,8 @@
 #include <functional>
 #include <memory>
 
-#include "mace/core/operator.h"
+#include "mace/core/ops/operator.h"
+#include "mace/core/registry/ops_registry.h"
 
 namespace mace {
 namespace ops {
@@ -71,7 +72,6 @@ class TargetRMSNormOp<DeviceType::CPU, T> : public Operation {
     return result;
   }
 
-
   void NormalizePerRow(const float *data,
                        const index_t data_len,
                        float d_scale,
@@ -105,9 +105,9 @@ class TargetRMSNormOp<DeviceType::CPU, T> : public Operation {
                         std::multiplies<index_t>());
     if (block_dim_ == 0) block_dim_ = static_cast<int>(input_dim);
     MACE_CHECK(input_dim % block_dim_ == 0, "block_dim must divide input_dim!");
-    const index_t output_dim = add_log_stddev_ ?
+    const index_t output_dim = add_log_stddev_ > 0 ?
                                input_dim + (input_dim / block_dim_) : input_dim;
-    std::vector<index_t> output_shape = input->shape();
+    std::vector<index_t> output_shape(input_shape);
     output_shape[dim_size - 1] = output_dim;
     MACE_RETURN_IF_ERROR(output->Resize(output_shape));
 
@@ -140,7 +140,6 @@ class TargetRMSNormOp<DeviceType::CPU, T> : public Operation {
       }
     }, 0, num_rows, 1);
 
-
     return MaceStatus::MACE_SUCCESS;
   }
 
@@ -150,9 +149,11 @@ class TargetRMSNormOp<DeviceType::CPU, T> : public Operation {
   int block_dim_;
 };
 
-void RegisterTargetRMSNorm(OpRegistryBase *op_registry) {
+void RegisterTargetRMSNorm(OpRegistry *op_registry) {
   MACE_REGISTER_OP(op_registry, "TargetRMSNorm", TargetRMSNormOp,
                    DeviceType::CPU, float);
+  MACE_REGISTER_BF16_OP(op_registry, "TargetRMSNorm", TargetRMSNormOp,
+                        DeviceType::CPU);
 }
 
 }  // namespace ops

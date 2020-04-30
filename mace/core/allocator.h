@@ -27,6 +27,10 @@
 #include "mace/public/mace.h"
 #include "mace/utils/logging.h"
 
+#ifdef MACE_ENABLE_RPCMEM
+#include "mace/core/rpcmem.h"
+#endif  // MACE_ENABLE_RPCMEM
+
 namespace mace {
 
 #if defined(__hexagon__)
@@ -47,24 +51,31 @@ class Allocator {
  public:
   Allocator() {}
   virtual ~Allocator() noexcept {}
-  virtual MaceStatus New(size_t nbytes, void **result) const = 0;
+  virtual MaceStatus New(size_t nbytes, void **result) = 0;
   virtual MaceStatus NewImage(const std::vector<size_t> &image_shape,
                               const DataType dt,
-                              void **result) const = 0;
-  virtual void Delete(void *data) const = 0;
-  virtual void DeleteImage(void *data) const = 0;
-  virtual void *Map(void *buffer, size_t offset, size_t nbytes) const = 0;
+                              void **result);
+  virtual void Delete(void *data) = 0;
+  virtual void DeleteImage(void *data);
+  virtual void *Map(void *buffer,
+                    size_t offset,
+                    size_t nbytes,
+                    bool finish_cmd_queue);
   virtual void *MapImage(void *buffer,
                          const std::vector<size_t> &image_shape,
-                         std::vector<size_t> *mapped_image_pitch) const = 0;
-  virtual void Unmap(void *buffer, void *mapper_ptr) const = 0;
+                         std::vector<size_t> *mapped_image_pitch,
+                         bool finish_cmd_queue);
+  virtual void Unmap(void *buffer, void *mapper_ptr);
   virtual bool OnHost() const = 0;
+#ifdef MACE_ENABLE_RPCMEM
+  virtual Rpcmem *rpcmem();
+#endif  // MACE_ENABLE_RPCMEM
 };
 
 class CPUAllocator : public Allocator {
  public:
   ~CPUAllocator() override {}
-  MaceStatus New(size_t nbytes, void **result) const override {
+  MaceStatus New(size_t nbytes, void **result) override {
     VLOG(3) << "Allocate CPU buffer: " << nbytes;
     if (nbytes == 0) {
       return MaceStatus::MACE_SUCCESS;
@@ -80,40 +91,12 @@ class CPUAllocator : public Allocator {
     return MaceStatus::MACE_SUCCESS;
   }
 
-  MaceStatus NewImage(const std::vector<size_t> &shape,
-                      const DataType dt,
-                      void **result) const override {
-    MACE_UNUSED(shape);
-    MACE_UNUSED(dt);
-    MACE_UNUSED(result);
-    LOG(FATAL) << "Allocate CPU image";
-    return MaceStatus::MACE_SUCCESS;
-  }
-
-  void Delete(void *data) const override {
+  void Delete(void *data) override {
     MACE_CHECK_NOTNULL(data);
     VLOG(3) << "Free CPU buffer";
     free(data);
   }
-  void DeleteImage(void *data) const override {
-    LOG(FATAL) << "Free CPU image";
-    free(data);
-  };
-  void *Map(void *buffer, size_t offset, size_t nbytes) const override {
-    MACE_UNUSED(nbytes);
-    return reinterpret_cast<char*>(buffer) + offset;
-  }
-  void *MapImage(void *buffer,
-                 const std::vector<size_t> &image_shape,
-                 std::vector<size_t> *mapped_image_pitch) const override {
-    MACE_UNUSED(image_shape);
-    MACE_UNUSED(mapped_image_pitch);
-    return buffer;
-  }
-  void Unmap(void *buffer, void *mapper_ptr) const override {
-    MACE_UNUSED(buffer);
-    MACE_UNUSED(mapper_ptr);
-  }
+
   bool OnHost() const override { return true; }
 };
 
